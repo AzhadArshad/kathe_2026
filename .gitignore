@@ -1,0 +1,91 @@
+# --- secrets -----------------------------------------------------------------
+# .env holds HF_TOKEN. BPCC and indictrans2-en-indic-1B are gated; a leaked
+# token grants access under your account. Never commit it.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- data --------------------------------------------------------------------
+# PROJECT_NOTES.md §2.5: raw data and weights never go to git; large data stays local
+# and is documented in data/README.md.
+#
+# data/raw/       BPCC TSVs + englishdev.csv, read-only inputs
+# data/processed/ derived corpora (~286 MB); regenerate with data.fetch_bpcc
+#                 + data.filter + data.leakage
+# data/dev/       FLORES-200 is a GATED dataset -- redistributing it here would
+#                 route around that gate. Fetch it yourself.
+# Excluding the *contents* (dir/*) rather than the directory (dir/): git does
+# not descend into an excluded directory, so a `!` negation inside one can never
+# match and the folder would be missing entirely from a fresh clone.
+data/raw/*
+data/processed/*
+data/dev/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/dev/.gitkeep
+!data/README.md
+
+# Loose corpora anywhere
+*.jsonl
+*.tsv
+!requirements-kaggle.txt
+
+# --- model weights -----------------------------------------------------------
+# Weights go to the HF Hub, not git (PROJECT_NOTES.md §2.5).
+models/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+adapter_model/
+lora/
+
+# --- environments ------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- caches ------------------------------------------------------------------
+.cache/
+huggingface/
+transformers_cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- run artifacts -----------------------------------------------------------
+logs/
+wandb/
+runs/
+nohup.out
+*.log
+
+# --- internal working docs ---------------------------------------------------
+# Private planning and agent context; not part of the public deliverable.
+# NOTE: PLANNING.md currently holds the only copy of the data-pipeline
+# reproduction steps and the R2 numbers. Those need to live in README.md before
+# the repo goes public -- reproduction instructions are an expected part of the
+# open-source deliverable.
+PROJECT_NOTES.md
+PLANNING.md
+
+# --- os / editor -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+.vscode/*
+!.vscode/settings.json
