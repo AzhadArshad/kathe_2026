@@ -1,3 +1,14 @@
+# This file defines the DATA + SCORING environment only (`.venv`, via `uv sync`):
+# BPCC extraction, filtering, LaBSE, corpus and dev-set building, and metric
+# replication. It deliberately does NOT include IndicTransToolkit.
+#
+# IndicTrans2 DECODING lives in a second environment, `requirements-decode.txt`
+# -> `.venv-decode`. That split is forced, not stylistic: IndicTransToolkit
+# requires transformers==4.46.1, which caps huggingface-hub<1.0, while
+# datasets>=5.0.1 here requires huggingface-hub>=1.26.1. The two cannot coexist
+# in one interpreter — `uv lock` reports the conflict as unsatisfiable.
+# See requirements-decode.txt for the full reasoning and the hardware warning.
+
 [project]
 name = "kathe-2026"
 version = "0.1.0"

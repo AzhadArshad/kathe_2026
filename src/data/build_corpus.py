@@ -103,6 +103,76 @@ def write_split(out: Path, split: str, rows: list[dict]) -> dict:
     }
 
 
+def pair_key(row: dict) -> tuple[str, str]:
+    """Identity of a cleaned pair.
+
+    This is the same key the post-normalization dedup uses, so it is unique
+    across the cleaned corpus. `build_devsets` records it for every held-out
+    pair and this module excludes on it, which is what makes "the training
+    corpus shrank by exactly the held-out count" checkable rather than assumed.
+    """
+    return (row["src"], row["tgt"])
+
+
+def load_and_clean(
+    pairs: Path,
+    provenance: str = "all",
+    map_punctuation: bool = False,
+    verbose: bool = True,
+) -> tuple[list[dict], Counter]:
+    """Read the pairs JSONL and apply normalization + dedup.
+
+    Factored out so `data.build_devsets` selects its held-out pairs from
+    exactly the rows this module would have trained on. If the two ever ran
+    different cleaning, an exclusion key built by one would silently miss in
+    the other and held-out pairs would stay in the training split.
+    """
+    rows = read_jsonl(pairs)
+    if verbose:
+        print(f"  input {len(rows):,} pairs  ({pairs})")
+
+    if provenance != "all":
+        rows = [r for r in rows if r.get("provenance") == provenance]
+        if verbose:
+            print(f"  provenance={provenance}: {len(rows):,} pairs")
+
+    # Targets get the scorer's normalizer; sources get whitespace flattening
+    # only, since KashmiriNormalizer has nothing to say about English.
+    tgt_cfg = NormConfig(scorer_normalizer=True, map_punctuation=map_punctuation)
+
+    cleaned: list[dict] = []
+    dropped: Counter = Counter()
+    for r in rows:
+        src = flatten(str(r["src"]))
+        tgt = flatten(normalize(r["tgt"], tgt_cfg))
+        if not src or not tgt:
+            dropped["empty"] += 1
+            continue
+        # PLANNING.md: 25 Devanagari characters survive the >=80% per-sentence
+        # script filter. Drop the whole line rather than stripping characters —
+        # a half-removed word is worse training signal than one fewer pair.
+        if _DEVANAGARI.search(tgt):
+            dropped["devanagari"] += 1
+            continue
+        cleaned.append({**r, "src": src, "tgt": tgt})
+
+    # Normalization can collapse two previously distinct targets onto one.
+    seen, deduped = set(), []
+    for r in cleaned:
+        k = pair_key(r)
+        if k in seen:
+            dropped["dup_after_norm"] += 1
+            continue
+        seen.add(k)
+        deduped.append(r)
+
+    if verbose:
+        print(f"  after normalize + dedup: {len(deduped):,} pairs")
+        for k, v in dropped.most_common():
+            print(f"    dropped {k:18} {v:>7,}")
+    return deduped, dropped
+
+
 def run_leakage_check(rows: list[dict], dev_kas: Path, dev_en: Path, jaccard: float) -> int:
     """Re-run the R2 detectors. Returns the number of leaked pairs found."""
     from data.leakage import NearDupIndex, load_lines, loose_key, scorer_key
@@ -145,6 +215,20 @@ def main() -> int:
     ap.add_argument("--heldout", type=int, default=1000, help="in-training eval pairs")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
+        "--exclude",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="JSONL files of held-out pairs to remove from train (R0, the eval "
+             "slice). Excluded by exact pair key; a miscount is fatal.",
+    )
+    ap.add_argument(
+        "--dev-from",
+        type=Path,
+        help="JSONL to use as the in-training eval split, instead of sampling "
+             "at random. Use the length-matched slice from data.build_devsets.",
+    )
+    ap.add_argument(
         "--map-punctuation",
         action="store_true",
         help="ALSO map Latin punctuation in targets. OFF by default: PROJECT_NOTES.md §3 "
@@ -158,47 +242,36 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    rows = read_jsonl(args.pairs)
-    print(f"\n=== BUILD CORPUS ===\n  input {len(rows):,} pairs  ({args.pairs})")
+    print("\n=== BUILD CORPUS ===")
+    deduped, dropped = load_and_clean(
+        args.pairs, args.provenance, args.map_punctuation, verbose=True
+    )
+    pool_size = len(deduped)
 
-    if args.provenance != "all":
-        rows = [r for r in rows if r.get("provenance") == args.provenance]
-        print(f"  provenance={args.provenance}: {len(rows):,} pairs")
-
-    # --- normalize -----------------------------------------------------------
-    # Targets get the scorer's normalizer; sources get whitespace flattening
-    # only, since KashmiriNormalizer has nothing to say about English.
-    tgt_cfg = NormConfig(scorer_normalizer=True, map_punctuation=args.map_punctuation)
-
-    cleaned: list[dict] = []
-    dropped = Counter()
-    for r in rows:
-        src = flatten(str(r["src"]))
-        tgt = flatten(normalize(r["tgt"], tgt_cfg))
-        if not src or not tgt:
-            dropped["empty"] += 1
-            continue
-        # PLANNING.md: 25 Devanagari characters survive the >=80% per-sentence
-        # script filter. Drop the whole line rather than stripping characters —
-        # a half-removed word is worse training signal than one fewer pair.
-        if _DEVANAGARI.search(tgt):
-            dropped["devanagari"] += 1
-            continue
-        cleaned.append({**r, "src": src, "tgt": tgt})
-
-    # Normalization can collapse two previously distinct targets onto one.
-    seen, deduped = set(), []
-    for r in cleaned:
-        k = (r["src"], r["tgt"])
-        if k in seen:
-            dropped["dup_after_norm"] += 1
-            continue
-        seen.add(k)
-        deduped.append(r)
-
-    print(f"  after normalize + dedup: {len(deduped):,} pairs")
-    for k, v in dropped.most_common():
-        print(f"    dropped {k:18} {v:>7,}")
+    # --- remove the held-out dev sets ----------------------------------------
+    # R0 (the register-matched decision set) and the in-training eval slice are
+    # both selected by `data.build_devsets` from this same cleaned pool. They
+    # are excluded here by exact pair key, and the count is asserted, so a
+    # silently-missed exclusion fails the build instead of leaking into train.
+    excluded: dict[tuple[str, str], str] = {}
+    for spec in args.exclude:
+        rows_x = read_jsonl(spec)
+        for r in rows_x:
+            excluded[pair_key(r)] = spec.name
+    if excluded:
+        before = len(deduped)
+        deduped = [r for r in deduped if pair_key(r) not in excluded]
+        removed = before - len(deduped)
+        print(f"\n  held-out exclusion: {removed:,} pairs removed "
+              f"({before:,} -> {len(deduped):,})")
+        if removed != len(excluded):
+            print(
+                f"\nFATAL: asked to exclude {len(excluded):,} held-out pairs but "
+                f"only {removed:,} were found in the cleaned pool. The dev sets "
+                f"were built from a different corpus or different normalization "
+                f"settings; excluding them here is not reliable."
+            )
+            return 1
 
     # --- leakage -------------------------------------------------------------
     if args.dev_kas and args.dev_en:
@@ -217,16 +290,26 @@ def main() -> int:
               "PROJECT_NOTES.md §2.3 requires it before every training run.")
 
     # --- split ---------------------------------------------------------------
-    # Held-out eval is drawn from human sources so that checkpoint selection is
-    # not steered by mined noise. Falls back to the full pool if none is human.
     rng = random.Random(args.seed)
-    human_idx = [i for i, r in enumerate(deduped) if r.get("provenance") == "human"]
-    pool = human_idx or list(range(len(deduped)))
-    n_dev = min(args.heldout, max(0, len(pool) - 1))
-    dev_idx = set(rng.sample(pool, n_dev))
-
-    dev_rows = [r for i, r in enumerate(deduped) if i in dev_idx]
-    train_rows = [r for i, r in enumerate(deduped) if i not in dev_idx]
+    if args.dev_from:
+        # The in-training eval slice comes from `data.build_devsets`, which
+        # length-matches it to the test set. Sampling it at random here gave a
+        # 15.7-word mean against a 7.3-word test set, so checkpoint selection
+        # optimized the wrong sentence length (PLANNING.md, 2026-08-09).
+        dev_rows = read_jsonl(args.dev_from)
+        train_rows = list(deduped)
+        print(f"  in-training eval slice: {len(dev_rows):,} pairs from {args.dev_from}")
+    else:
+        # Legacy path. Held-out eval is drawn from human sources so that
+        # checkpoint selection is not steered by mined noise.
+        print("  !! --dev-from not given: sampling the eval slice at RANDOM. "
+              "This is register-mismatched against a 7.3-word test set.")
+        human_idx = [i for i, r in enumerate(deduped) if r.get("provenance") == "human"]
+        pool = human_idx or list(range(len(deduped)))
+        n_dev = min(args.heldout, max(0, len(pool) - 1))
+        dev_idx = set(rng.sample(pool, n_dev))
+        dev_rows = [r for i, r in enumerate(deduped) if i in dev_idx]
+        train_rows = [r for i, r in enumerate(deduped) if i not in dev_idx]
     rng.shuffle(train_rows)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -235,6 +318,12 @@ def main() -> int:
         "source_pairs_sha256": sha256(args.pairs),
         "provenance_filter": args.provenance,
         "seed": args.seed,
+        "cleaned_pool_pairs": pool_size,
+        "held_out": {
+            "excluded_files": [str(p) for p in args.exclude],
+            "excluded_pairs": len(excluded),
+            "dev_from": str(args.dev_from) if args.dev_from else None,
+        },
         "target_normalization": {
             "scorer_normalizer": True,
             "map_punctuation": args.map_punctuation,
@@ -255,11 +344,15 @@ def main() -> int:
     from KashmiriNormalizer.constants import KASHMIRI_DIACRITICS
 
     dia = sum(1 for c in joined if c in KASHMIRI_DIACRITICS)
-    print(f"\n  train {len(train_rows):,}   dev(held-out) {len(dev_rows):,}")
+    src_words = sum(len(r["src"].split()) for r in train_rows)
+    print(f"\n  cleaned pool {pool_size:,}  -  held out {len(excluded):,}  =  train {len(train_rows):,}")
+    print(f"  in-training eval slice: {len(dev_rows):,}")
     print(f"  train target diacritic density: {100 * dia / max(1, len(joined)):.2f} per 100 chars "
           f"(FLORES devtest reference: 7.70)")
     print(f"  train mean chars/line: {len(joined) / max(1, len(train_rows)):.1f} "
-          f"(FLORES devtest: 124.6 — expect short-output bias, see R6)")
+          f"  mean src words: {src_words / max(1, len(train_rows)):.1f}")
+    print(f"    (KATHE test set: 39.0 chars / 7.3 words — R6 tunes toward THIS, "
+          f"not FLORES's 124.6; expect over-generation)")
     print(f"  NFC: {joined == ud.normalize('NFC', joined)}")
     print(f"\n  wrote {args.out}/  (manifest.json records hashes and counts)")
     return 0

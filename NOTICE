@@ -84,9 +84,15 @@ KashmiriNormalizer (pinned ==0.1.0)
 NOT USED IN RELEASED ARTIFACTS
 ================================================================================
 
-facebook/nllb-200-distilled-1.3B is CC-BY-NC-4.0 (non-commercial). That term
-is incompatible with redistributing derived weights under Apache-2.0, which
-KATHE 2026 requires of every participant. No NLLB-derived weights are included
-in any artifact released by this project. If NLLB is ever used for candidate
-generation only, the resulting weights must not be published under Apache-2.0
-and this notice must be updated to say so.
+facebook/nllb-200-distilled-1.3B is CC-BY-NC-4.0 (non-commercial).
+
+  The KATHE 2026 organizers ruled on 2026-08-08 that any open-source model may
+  be used "even if it is not allowed to commercially use licences like GPL",
+  so this licence is not a bar to entry. NLLB is nonetheless not used by this
+  project, on cost grounds: a second full fine-tune is a large share of the
+  available GPU budget for uncertain gain.
+
+  No NLLB-derived weights are included in any artifact released here. If that
+  changes, the derived weights must be published under NLLB's own licence
+  rather than Apache-2.0 — a non-commercial term cannot be relicensed away —
+  and both this notice and MODEL_CARD.md must be updated to say so.

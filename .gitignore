@@ -52,6 +52,7 @@ lora/
 
 # --- environments ------------------------------------------------------------
 .venv/
+.venv-decode/
 venv/
 env/
 __pycache__/
@@ -93,3 +94,5 @@ Thumbs.db
 *.swp
 .vscode/*
 !.vscode/settings.json
+kaggle_upload/
+kathe_q9_upload.zip

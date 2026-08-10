@@ -1,0 +1,48 @@
+# KATHE 2026 — local INFERENCE environment (CPU).
+#
+# This is a SECOND environment, deliberately. It cannot be merged into
+# pyproject.toml, and that is a hard dependency conflict rather than a
+# preference:
+#
+#     transformers==4.46.1  requires  huggingface-hub >=0.23.2,<1.0
+#     datasets>=5.0.1       requires  huggingface-hub >=1.26.1
+#
+# and transformers must stay at 4.46.1, because IndicTransToolkit's __init__
+# eagerly imports its collator, whose class body does
+# `from transformers.tokenization_utils import PreTrainedTokenizerBase` — a
+# re-export dropped in transformers 5.x. That breaks INFERENCE, not merely
+# training: `from IndicTransToolkit.processor import IndicProcessor` raises
+# ImportError under transformers 5.14.1. Verified 2026-08-10.
+#
+# So: the main `.venv` (pyproject.toml) does data work — BPCC extraction,
+# filtering, LaBSE, corpus and dev-set building, and scoring, none of which
+# touch IndicTransToolkit. This env does IndicTrans2 decoding.
+#
+# Versions match requirements-kaggle.txt on the metric path exactly
+# (transformers, indictranstoolkit, sacrebleu, KashmiriNormalizer), so a score
+# computed here and one computed in a Kaggle session are the same number.
+# torch is unpinned-by-platform: Kaggle's 2.10.0+cu128 is a CUDA build that
+# does not resolve on macOS.
+#
+# Create with:
+#     uv venv --python 3.11 .venv-decode
+#     uv pip install --python .venv-decode/bin/python -r requirements-decode.txt
+#
+# Use with:
+#     .venv-decode/bin/python scripts/translate.py --input ... --output ...
+#
+# WARNING — hardware. Do not decode the 1B on this machine's MPS backend. Beam
+# 5 at batch 32 exhausted unified memory and forced a shutdown (8 GB shared
+# with the OS against 4.5 GB of fp32 weights plus beam activations). CPU at
+# batch 4 is memory-safe but runs at 0.08 sent/s, i.e. ~3.5 h for 1,000
+# sentences. 1B decoding belongs on a T4; see scripts/run_q9_kaggle.sh.
+# The 200M distilled checkpoint is fine locally.
+
+transformers==4.46.1
+indictranstoolkit==1.1.1
+KashmiriNormalizer==0.1.0
+sacrebleu==2.6.0
+sentencepiece==0.2.1
+torch==2.13.0
+numpy==2.4.6
+pandas==3.0.5

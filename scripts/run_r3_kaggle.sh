@@ -35,20 +35,33 @@ cd "$REPO"
 # (PROJECT_NOTES.md §5, verified against the 1.1.1 sdist).
 # torch is left at whatever the Kaggle image ships — the pinned 2.10.0+cu128
 # does not resolve from plain PyPI and the image already provides a CUDA build.
+# --no-deps is LOAD-BEARING. pyproject.toml declares transformers>=5.14.1 for
+# the data/scoring environment; a plain `pip install -e .` upgrades transformers
+# back to 5.x, which breaks IndicTransToolkit's import, and drags torch past the
+# Kaggle image's build, desynchronizing torchvision/torchaudio and the CUDA
+# libs. The editable install exists only to put src/ on the path — every runtime
+# dependency is named explicitly below. (Cost a Q9 session on 2026-08-10.)
+pip install -q --no-deps -e .
+
+# huggingface-hub pinned explicitly: transformers 4.46.1 requires <1.0 while
+# pyproject wants >=1.26.1, so a stale newer hub leaves an incompatible pair.
 pip install -q \
     "transformers==4.46.1" \
+    "huggingface-hub<1.0" \
     "indictranstoolkit==1.1.1" \
     "sacrebleu==2.6.0" \
     "KashmiriNormalizer==0.1.0" \
     "peft" "accelerate" "datasets" "sentencepiece" "pyyaml"
-
-pip install -q -e .   # pyproject maps src/ -> top-level, so `train.finetune` imports
 
 python - <<'PY'
 import torch, transformers
 print(f"torch {torch.__version__}  cuda={torch.cuda.is_available()}  devices={torch.cuda.device_count()}")
 print(f"transformers {transformers.__version__}")
 assert torch.cuda.device_count() >= 1, "no GPU visible — check the accelerator setting"
+assert transformers.__version__ == "4.46.1", (
+    f"transformers is {transformers.__version__}, must be 4.46.1. Something "
+    f"re-resolved it — check for a `pip install` without --no-deps."
+)
 from IndicTransToolkit import IndicProcessor, IndicDataCollator  # fails fast if the pin is wrong
 print("IndicTransToolkit import OK")
 PY
