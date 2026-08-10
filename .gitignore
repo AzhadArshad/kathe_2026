@@ -36,6 +36,10 @@ data/dev/*
 # Weights go to the HF Hub, not git (PROJECT_NOTES.md §2.5).
 models/
 checkpoints/
+# Trainer output_dir (config/r3_*.yaml). The weight patterns below miss
+# config.json, the tokenizer files and checkpoint-*/ state, which are not
+# weights but still do not belong in git.
+output/
 *.safetensors
 *.bin
 *.pt

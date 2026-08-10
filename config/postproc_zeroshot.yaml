@@ -1,0 +1,29 @@
+# Post-processing for ZERO-SHOT IndicTrans2 output (submission 001).
+#
+# Fields map 1:1 onto data.normalize.NormConfig. Every non-default value needs a
+# reason recorded in PLANNING.md §Decisions — PROJECT_NOTES.md §3 is explicit that
+# anything the official normalizer already collapses is free and must not be
+# worked on, so only the things it leaves alone appear here.
+
+# Always True. The scorer runs KashmiriNormalizer over both sides; applying it
+# here means the text we submit is byte-identical to the text we scored.
+scorer_normalizer: true
+
+# null = leave composition alone. Neither FLORES devtest nor BPCC is NFC
+# (PLANNING.md orthography diagnostic), so there is no measured target form yet.
+# Open question — do not set this on intuition.
+unicode_form: null
+
+# FALSE for zero-shot, deliberately. Decision 2026-08-07: zero-shot output is
+# already 99.7% Kashmiri-punctuated against 95.7% in the references, so mapping
+# Latin punctuation would overshoot. This flips to TRUE once fine-tuning starts,
+# because BPCC is only 89.5% — verify the direction on FLORES dev, do not assume.
+map_punctuation: false
+
+# ZWJ (U+200D) survives the scorer's normalizer, but stripping it is unverified
+# against the references. Off until measured.
+strip_zwj: false
+
+# ZWNJ->space can leave double spaces, which perturb the word-bigram half of
+# chrF++. Off until the references are confirmed single-spaced.
+collapse_whitespace: false

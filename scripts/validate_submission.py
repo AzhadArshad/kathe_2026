@@ -2,12 +2,13 @@
 """
 KATHE 2026 — submission validator.
 
-Nothing goes to Kaggle without passing this. You get three submissions; every
-check here corresponds to a real failure mode in the official scorer.
+Nothing goes to Kaggle without passing this (PROJECT_NOTES.md §2.1). Submissions are
+unlimited, but every check here corresponds to a real failure mode in the
+official scorer, and an unlimited budget does not make a rejected file cheap.
 
 Usage:
     python scripts/validate_submission.py --source data/raw/englishdev.csv \
-                                          --submission submissions/002/submission.csv
+                                          --submission submissions/001/submission.csv
 
 Exit code 0 = safe to submit. Non-zero = do not submit.
 """
@@ -17,11 +18,14 @@ from __future__ import annotations
 import argparse
 import sys
 import unicodedata as ud
+from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, "src")
-from kathe.normalize import NormConfig, normalize  # noqa: E402
+# Resolve src/ from this file, not from the cwd, so the validator works when
+# invoked from anywhere. Harmless when the editable install already provides it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from data.normalize import NormConfig, normalize  # noqa: E402
 
 SCORER_CFG = NormConfig(scorer_normalizer=True)
 

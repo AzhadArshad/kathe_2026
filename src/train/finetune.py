@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""
+KATHE 2026 — R3 fine-tuning.
+
+ADAPTED FROM AI4Bharat's `IndicTrans2/huggingface_interface/train_lora.py`
+(MIT). PROJECT_NOTES.md §2.8 forbids a hand-rolled training loop, so the data loading,
+the tokenization, the collator wiring and the Trainer construction are kept in
+the shape AI4Bharat shipped them. What changed, and why:
+
+  1. **Full fine-tune is now a first-class mode** (`peft: none`). Their script
+     always wraps the model with LoRA and saves only the adapter. The 200M
+     distilled model is fine-tuned whole; LoRA stays available for the 1B.
+  2. **Config comes from YAML, not thirty CLI flags** (PROJECT_NOTES.md §6), and the
+     resolved config is written next to the checkpoint so a run is reproducible
+     from its own output directory.
+  3. **The eval metric is the competition metric**, not raw BLEU/chrF. It is a
+     geometric mean of BLEU and chrF++ computed through `data.normalize`, the
+     same module the scorer path uses — see §metrics below for the one caveat.
+  4. **`evaluation_strategy` -> `eval_strategy`**, required by transformers
+     4.46.1, the version this repo is pinned to.
+  5. **Hub checkpointing every save**, because Kaggle sessions die mid-run.
+
+§metrics — READ THIS BEFORE TRUSTING eval_geo_proxy
+---------------------------------------------------
+The number logged during training is `eval_geo_proxy`, and it is NOT comparable
+to the 15.83 zero-shot baseline.
+
+`IndicProcessor.preprocess_batch` leaves training data in an internal space:
+Indic-tokenized, punctuation-spaced, entity placeholders unresolved. Turning it
+back into real Kashmiri is `postprocess_batch`'s job — and that method cannot be
+called here. It unconditionally does a **blocking** `Queue.get()` per sentence
+against a placeholder-map queue that `IndicProcessor(inference=False)` never
+fills. Calling it during in-training eval does not raise; it hangs the run
+forever, which on a 9-hour Kaggle session is the worst available failure.
+
+So predictions and references are both scored in that internal space. They are
+mutually consistent, which makes the number a sound *relative* signal for
+ranking checkpoints, and that is all it is used for. Report real scores with
+`scripts/translate.py` over FLORES devtest, through the full
+preprocess -> generate -> postprocess -> normalize path.
+
+Usage (Kaggle T4 x2):
+    torchrun --nproc_per_node=2 -m train.finetune --config config/r3_200m_full.yaml
+
+Single GPU, or a data-only smoke test:
+    python -m train.finetune --config config/r3_200m_full.yaml --dry-run
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pandas as pd
+import sacrebleu
+import yaml
+from datasets import Dataset
+from IndicTransToolkit import IndicDataCollator, IndicProcessor
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    EarlyStoppingCallback,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    set_seed,
+)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from data.normalize import NormConfig, normalize_many  # noqa: E402
+
+# Scorer-normalizer only. The project's extra orthography fixes belong in
+# post-processing, not in a training-time metric (data/normalize.py).
+_SCORER = NormConfig(scorer_normalizer=True)
+
+
+# --- data (structure preserved from AI4Bharat) --------------------------------
+def load_and_process_translation_dataset(
+    data_dir,
+    split="train",
+    tokenizer=None,
+    processor=None,
+    src_lang_list=None,
+    tgt_lang_list=None,
+    num_proc=8,
+    max_length=256,
+    seed=42,
+):
+    complete_dataset = {"sentence_SRC": [], "sentence_TGT": []}
+
+    for src_lang in src_lang_list:
+        for tgt_lang in tgt_lang_list:
+            if src_lang == tgt_lang:
+                continue
+            src_path = os.path.join(data_dir, split, f"{src_lang}-{tgt_lang}", f"{split}.{src_lang}")
+            tgt_path = os.path.join(data_dir, split, f"{src_lang}-{tgt_lang}", f"{split}.{tgt_lang}")
+            if not os.path.exists(src_path) or not os.path.exists(tgt_path):
+                raise FileNotFoundError(
+                    f"Source ({split}.{src_lang}) or Target ({split}.{tgt_lang}) file "
+                    f"not found in {data_dir}. Run `python -m data.build_corpus` first."
+                )
+            with open(src_path, encoding="utf-8") as src_file, open(tgt_path, encoding="utf-8") as tgt_file:
+                src_lines = src_file.readlines()
+                tgt_lines = tgt_file.readlines()
+
+            assert len(src_lines) == len(tgt_lines), (
+                f"Source and Target files have different number of lines for "
+                f"{split}.{src_lang} and {split}.{tgt_lang}"
+            )
+
+            complete_dataset["sentence_SRC"] += processor.preprocess_batch(
+                src_lines, src_lang=src_lang, tgt_lang=tgt_lang, is_target=False
+            )
+            complete_dataset["sentence_TGT"] += processor.preprocess_batch(
+                tgt_lines, src_lang=tgt_lang, tgt_lang=src_lang, is_target=True
+            )
+
+    complete_dataset = Dataset.from_dict(complete_dataset).shuffle(seed=seed)
+    return complete_dataset.map(
+        lambda example: preprocess_fn(example, tokenizer=tokenizer, max_length=max_length),
+        batched=True,
+        num_proc=num_proc,
+    )
+
+
+def preprocess_fn(example, tokenizer, max_length=256, **kwargs):
+    model_inputs = tokenizer(
+        example["sentence_SRC"], truncation=True, padding=False, max_length=max_length
+    )
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(
+            example["sentence_TGT"], truncation=True, padding=False, max_length=max_length
+        )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+
+
+# --- metrics ------------------------------------------------------------------
+def compute_metrics_factory(tokenizer, print_samples=False, n_samples=5):
+    """Competition metric: geometric mean of BLEU(13a) and chrF++.
+
+    See the module docstring, §metrics — this is computed in IndicProcessor's
+    internal space and ranks checkpoints; it does not report scores.
+    """
+
+    def compute_metrics(eval_preds):
+        preds, labels = eval_preds
+
+        labels[labels == -100] = tokenizer.pad_token_id
+        preds[preds == -100] = tokenizer.pad_token_id
+
+        with tokenizer.as_target_tokenizer():
+            preds = [
+                x.strip()
+                for x in tokenizer.batch_decode(
+                    preds, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                )
+            ]
+            labels = [
+                x.strip()
+                for x in tokenizer.batch_decode(
+                    labels, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                )
+            ]
+
+        assert len(preds) == len(labels), "Predictions and Labels have different lengths"
+
+        # Same normalizer the scorer uses, so the metric moves for the same
+        # reasons the leaderboard would.
+        hyps = normalize_many(preds, _SCORER)
+        refs = normalize_many(labels, _SCORER)
+
+        # An empty hypothesis makes the REAL scorer raise and reject the whole
+        # submission. Here it must not kill a training run, so it is counted and
+        # substituted — a rising empty_preds is the signal that decoding has
+        # collapsed.
+        empty = sum(1 for h in hyps if not h.strip())
+        hyps = [h if h.strip() else "۔" for h in hyps]
+
+        bleu = sacrebleu.corpus_bleu(hyps, [refs]).score
+        chrfpp = sacrebleu.corpus_chrf(hyps, [refs], word_order=2).score
+        geo = 0.0 if (bleu <= 0 or chrfpp <= 0) else (bleu * chrfpp) ** 0.5
+
+        if print_samples:
+            df = pd.DataFrame({"Predictions": preds, "References": labels}).sample(
+                n=min(n_samples, len(preds))
+            )
+            for pred, label in zip(df["Predictions"].values, df["References"].values):
+                print(f" | > Prediction: {pred}")
+                print(f" | > Reference : {label}\n")
+
+        # Output/reference length ratio — R6 length calibration watches this.
+        # BPCC lines average 92.6 chars against FLORES's 124.6, so a fine-tune
+        # biases short and BLEU's brevity penalty bites.
+        ref_chars = sum(len(r) for r in refs) or 1
+        return {
+            "bleu": bleu,
+            "chrf_pp": chrfpp,
+            "geo_proxy": geo,
+            "len_ratio": sum(len(h) for h in hyps) / ref_chars,
+            "empty_preds": empty,
+        }
+
+    return compute_metrics
+
+
+# --- config -------------------------------------------------------------------
+def git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True
+        ).strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True, type=Path)
+    ap.add_argument("--data-dir", help="override config data_dir (stage 2 uses this)")
+    ap.add_argument("--output-dir", help="override config output_dir")
+    ap.add_argument("--init-from", help="start from a previous checkpoint instead of the base model")
+    ap.add_argument("--resume", action="store_true", help="resume from the last checkpoint in output_dir")
+    ap.add_argument("--dry-run", action="store_true", help="build datasets, print shapes, exit before training")
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    data_dir = args.data_dir or cfg["data_dir"]
+    output_dir = args.output_dir or cfg["output_dir"]
+    model_id = args.init_from or cfg["model"]
+
+    set_seed(cfg["seed"])
+    is_main = int(os.environ.get("RANK", "0")) == 0
+
+    if is_main:
+        print(f" | > config     {args.config}")
+        print(f" | > model      {model_id}")
+        print(f" | > data_dir   {data_dir}")
+        print(f" | > output_dir {output_dir}")
+        print(f" | > git commit {git_commit()}")
+
+    print(f" | > Loading {model_id} and tokenizer ...")
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        model_id,
+        trust_remote_code=True,  # IndicTrans2 ships custom modeling code
+        attn_implementation="eager",
+        dropout=cfg["dropout"],
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+    # inference=False is what training wants, and is also why postprocess_batch
+    # must never be called on this instance. See the module docstring, §metrics.
+    processor = IndicProcessor(inference=False)
+
+    data_collator = IndicDataCollator(
+        tokenizer=tokenizer,
+        model=model,
+        padding="longest",
+        pad_to_multiple_of=8,  # fp16 tensor cores want multiples of 8
+        label_pad_token_id=-100,
+    )
+
+    common = dict(
+        tokenizer=tokenizer,
+        processor=processor,
+        src_lang_list=[cfg["src_lang"]],
+        tgt_lang_list=[cfg["tgt_lang"]],
+        num_proc=cfg["num_proc"],
+        max_length=cfg["max_seq_length"],
+        seed=cfg["seed"],
+    )
+    train_dataset = load_and_process_translation_dataset(data_dir, split="train", **common)
+    print(f" | > Loaded train dataset from {data_dir}. Size: {len(train_dataset)} ...")
+    eval_dataset = load_and_process_translation_dataset(data_dir, split="dev", **common)
+    print(f" | > Loaded eval dataset from {data_dir}. Size: {len(eval_dataset)} ...")
+
+    if args.dry_run:
+        ex = train_dataset[0]
+        print("\n | > DRY RUN — first training example")
+        print(f"   SRC : {ex['sentence_SRC'][:160]}")
+        print(f"   TGT : {ex['sentence_TGT'][:160]}")
+        print(f"   input_ids {len(ex['input_ids'])}  labels {len(ex['labels'])}")
+        print(" | > datasets built, exiting before training.")
+        return 0
+
+    # Label smoothing lives on IndicTrans2's custom model class, and must be set
+    # BEFORE any PEFT wrapper — the wrapper does not forward the setter.
+    if hasattr(model, "set_label_smoothing"):
+        model.set_label_smoothing(cfg["label_smoothing"])
+    elif cfg["label_smoothing"]:
+        print(" | > WARNING: model has no set_label_smoothing; label smoothing NOT applied")
+
+    if cfg["peft"] == "lora":
+        from peft import LoraConfig, get_peft_model
+
+        lora = cfg["lora"]
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r=lora["r"],
+                bias="none",
+                inference_mode=False,
+                task_type="SEQ_2_SEQ_LM",
+                lora_alpha=lora["alpha"],
+                lora_dropout=lora["dropout"],
+                target_modules=lora["target_modules"].split(","),
+            ),
+        )
+        model.print_trainable_parameters()
+    else:
+        n = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f" | > FULL fine-tune — {n:,} trainable parameters")
+
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        do_train=True,
+        do_eval=True,
+        seed=cfg["seed"],
+        fp16=cfg["fp16"],
+        logging_strategy="steps",
+        eval_strategy="steps",  # renamed from evaluation_strategy in transformers 4.41+
+        save_strategy="steps",
+        logging_steps=cfg["logging_steps"],
+        save_total_limit=cfg["save_total_limit"],
+        predict_with_generate=True,
+        load_best_model_at_end=True,
+        max_steps=cfg["max_steps"],
+        num_train_epochs=cfg["num_train_epochs"],
+        per_device_train_batch_size=cfg["batch_size"],
+        per_device_eval_batch_size=cfg["batch_size"],
+        gradient_accumulation_steps=cfg["grad_accum_steps"],
+        eval_accumulation_steps=cfg["grad_accum_steps"],
+        weight_decay=cfg["weight_decay"],
+        adam_beta1=cfg["adam_beta1"],
+        adam_beta2=cfg["adam_beta2"],
+        max_grad_norm=cfg["max_grad_norm"],
+        optim=cfg["optimizer"],
+        lr_scheduler_type=cfg["lr_scheduler"],
+        warmup_steps=cfg["warmup_steps"],
+        learning_rate=cfg["learning_rate"],
+        save_steps=cfg["save_steps"],
+        eval_steps=cfg["eval_steps"],
+        dataloader_num_workers=cfg["num_workers"],
+        metric_for_best_model=cfg["metric_for_best_model"],
+        greater_is_better=cfg["greater_is_better"],
+        report_to=cfg["report_to"],
+        generation_max_length=cfg["max_seq_length"],
+        generation_num_beams=cfg["eval_num_beams"],
+        group_by_length=cfg["group_by_length"],
+        sortish_sampler=cfg["sortish_sampler"],
+        # Kaggle sessions die (PROJECT_NOTES.md §5); every save is a Hub push.
+        push_to_hub=cfg["push_to_hub"],
+        hub_model_id=cfg["hub_model_id"],
+        hub_private_repo=cfg["hub_private_repo"],
+        hub_strategy="every_save" if cfg["push_to_hub"] else "end",
+    )
+
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        data_collator=data_collator,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics_factory(
+            tokenizer=tokenizer, print_samples=cfg["print_samples"]
+        ),
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=cfg["early_stopping_patience"],
+                early_stopping_threshold=cfg["early_stopping_threshold"],
+            )
+        ],
+    )
+
+    print(" | > Starting training ...")
+    try:
+        trainer.train(resume_from_checkpoint=args.resume or None)
+    except KeyboardInterrupt:
+        print(" | > Training interrupted — saving what exists ...")
+
+    if is_main:
+        # For peft=none this writes full merged weights, so the live round has
+        # no gated-base dependency (PLANNING.md decision 2026-08-07).
+        trainer.save_model(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        Path(output_dir, "train_config.resolved.yaml").write_text(
+            yaml.safe_dump(
+                {**cfg, "data_dir": data_dir, "output_dir": output_dir,
+                 "model": model_id, "git_commit": git_commit()},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        manifest = Path(data_dir, "manifest.json")
+        if manifest.exists():
+            Path(output_dir, "corpus_manifest.json").write_text(
+                manifest.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        print(f" | > saved to {output_dir}")
+        print(json.dumps(trainer.evaluate(), indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
