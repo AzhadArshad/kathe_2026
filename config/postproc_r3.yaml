@@ -1,0 +1,34 @@
+# Post-processing for the R3 FINE-TUNED model (submission 002).
+#
+# Fields map 1:1 onto data.normalize.NormConfig. Identical to
+# postproc_zeroshot.yaml, but that is a MEASURED result rather than a copy —
+# see below. Every non-default value needs a reason in PLANNING.md §Decisions.
+
+# Always True. The scorer runs KashmiriNormalizer over both sides; applying it
+# here means the text submitted is byte-identical to the text scored.
+scorer_normalizer: true
+
+# null = leave composition alone. Neither FLORES devtest, BPCC, nor the R3
+# output has a measured target composition. Do not set on intuition.
+unicode_form: null
+
+# FALSE — measured on R0 with R3's own output, 2026-08-10:
+#
+#     map_punctuation OFF : BLEU 17.67  chrF++ 46.43  GEO 28.64
+#     map_punctuation ON  : BLEU 17.66  chrF++ 46.37  GEO 28.62
+#
+# The earlier note in postproc_zeroshot.yaml predicted this would flip to TRUE
+# once fine-tuning started, on the reasoning that BPCC is only 89.5%
+# Kashmiri-punctuated and would drag output toward Latin. **That did not
+# happen.** R3 output is 75.6% Kashmiri-final and just 0.2% Latin-final, so
+# there is almost nothing for the mapping to convert, and what it does convert
+# it gets slightly wrong. Verified, not assumed — as PROJECT_NOTES.md §3 requires.
+map_punctuation: false
+
+# ZWJ (U+200D) survives the scorer's normalizer, but stripping it is unverified
+# against the references. Off until measured.
+strip_zwj: false
+
+# ZWNJ->space can leave double spaces, which perturb the word-bigram half of
+# chrF++. Off until the references are confirmed single-spaced.
+collapse_whitespace: false

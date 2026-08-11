@@ -14,9 +14,40 @@ orthography alone cannot be the binding constraint — translation quality is.
 Note the model swap. The 15.83 baseline is the **1B** model zero-shot; this run
 fine-tunes the **200M distilled** model. A result below 15.83 is therefore
 ambiguous between "fine-tuning did not help" and "200M is smaller than 1B". The
-unambiguous comparison is R3-200M against 200M zero-shot, which has not been
-measured. **Measure it before drawing conclusions** — one decode of FLORES
-devtest with the 200M base, via `scripts/translate.py`.
+unambiguous comparison is R3-200M against **200M zero-shot**, which has still
+not been measured. **Measure it in the same session, before training** — two
+decodes via `scripts/translate.py`, ~2 min on a T4:
+
+**Controls measured 2026-08-10, both on R0, beam 5, same decode path:**
+
+| System | BLEU | chrF++ | Geo |
+| --- | ---: | ---: | ---: |
+| IT2-**1B** zero-shot | 18.00 | 44.25 | **28.22** |
+| IT2-**200M dist** zero-shot | 14.66 | 41.66 | **24.71** |
+
+The 1B also has FLORES devtest **15.83** and leaderboard **8.00**.
+
+**Two thresholds, and they mean different things:**
+
+1. **> 24.71 — did fine-tuning do anything?** Same model, same dev set, only
+   fine-tuning changed. This is the only clean read on the method.
+2. **> 28.22 — is the fine-tuned 200M worth submitting over what we already
+   have?** The current 8.00 leaderboard entry is the 1B zero-shot. The 200M
+   starts 3.51 geo (12.4%) behind it, so R3 must gain **+14.2%** over its own
+   base merely to draw level. Distillation cost more than fine-tuning may
+   recover — if R3 lands between 24.71 and 28.22 that is a *successful
+   fine-tune of a weaker model*, and the right response is to move to the 1B
+   LoRA run rather than submit it.
+
+Both controls sit at output/reference char ratio 0.964–0.966, so the bases are
+well calibrated for length before training. Any drift above ~1.0 after
+fine-tuning is the R6 over-generation risk arriving.
+
+**Read R0 numbers as relative only.** IndicTrans2 was trained on BPCC and R0 is
+cut from BPCC, so every IT2-derived checkpoint is partly scored on its own
+training data. Ranking checkpoints against each other is valid — the
+contamination is common to all of them. Treating an R0 score as a leaderboard
+prediction is not. See PLANNING.md §Q9.
 
 ## Config
 
@@ -26,8 +57,8 @@ devtest with the 200M base, via `scripts/translate.py`.
 | --- | --- |
 | Base | `ai4bharat/indictrans2-en-indic-dist-200M` (MIT) |
 | Adaptation | full fine-tune (all 200M parameters), not LoRA |
-| Train pairs | 124,538 |
-| Held-out eval | 1,000 (human sources only, seed 42) |
+| Train pairs | **123,538** (rebuilt 2026-08-10; R0 + eval slice excluded) |
+| Held-out eval | **997, length-matched** (6.89 src words) — see below |
 | Target normalization | `KashmiriNormalizer` 0.1.0, `map_punctuation: false` |
 | LR / schedule | 5e-5, inverse_sqrt, 1000 warmup |
 | Effective batch | 128 (32 × 2 GPUs × 2 accum) |
@@ -38,26 +69,98 @@ devtest with the 200M base, via `scripts/translate.py`.
 
 ### Corpus provenance
 
+**Rebuilt 2026-08-10.** The corpus shipped on 08-09 is superseded — re-upload
+the Kaggle dataset before running, or this trains on R0 and every number it
+produces is contaminated.
+
 Built from `data/processed/bpcc_kas_clean.jsonl` (sha256 `0065aee7…`) by
-`python -m data.build_corpus`. Dropped during the build: 40 duplicates that
-collapsed onto each other once the targets were normalized, 4 lines with
-residual Devanagari. Leakage check re-run against FLORES: **0 leaked pairs**.
+`python -m data.build_corpus --exclude data/dev/r0/r0.jsonl
+data/dev/r3_eval/r3_eval.jsonl --dev-from data/dev/r3_eval/r3_eval.jsonl`.
+Dropped during the build: 40 duplicates that collapsed onto each other once the
+targets were normalized, 4 lines with residual Devanagari. Cleaned pool 125,538
+− 2,000 held out = **123,538 train**, asserted by the build rather than assumed.
+Leakage re-run against FLORES: **0 leaked pairs**.
 
-Measured on the built training targets — matches the R2 diagnostic exactly,
-which is the check that the normalization did not damage the corpus:
+**The eval slice changed, and this is the point of the rebuild.** As sampled on
+08-09 it averaged 15.7 English words against a 7.3-word test set, so
+`eval_geo_proxy` would have selected checkpoints optimized for the wrong
+sentence length. It is now length-matched at 6.89 words, drawn stratified to the
+test set's own word-count distribution, human sources only, and disjoint from
+R0. Any `eval_geo_proxy` value is not comparable to one from the old slice —
+nothing was ever run on it, so nothing is lost.
 
-| | train targets | FLORES devtest |
-| --- | ---: | ---: |
-| diacritics per 100c | 9.04 | 7.70 |
-| mean chars/line | 92.6 | 124.6 |
+Measured on the built training targets — matches the R2 diagnostic, which is the
+check that normalization did not damage the corpus:
 
-The length gap is the R6 problem in advance: fine-tuning on 92.6-char lines
-biases output short, and BLEU's brevity penalty bites. `len_ratio` is logged at
-every eval for exactly this reason.
+| | train targets | FLORES devtest | KATHE test |
+| --- | ---: | ---: | ---: |
+| diacritics per 100c | 9.03 | 7.70 | — |
+| mean chars/line | 93.4 | 124.6 | **39.0** |
+| mean src words | 15.7 | 21.6 | **7.3** |
 
-## Results — FILL IN AFTER THE RUN
+**R6, corrected direction.** The earlier note here said short output and brevity
+penalty were the risk. That was backwards. Training on 93.4-char lines to
+translate a 39-char test set biases output *long* — over-generation is the risk.
+The 1B zero-shot is currently well calibrated (R0 output/ref char ratio 0.966),
+so fine-tuning is what could break it. `len_ratio` is logged at every eval
+precisely to catch that, and it should stay near 1.0 against the length-matched
+slice, not drift above it.
+
+## Results — run 2026-08-10
 
 Never report a score without naming the dev set. Tokenizer is always 13a.
+All rows: beam 5, full `IndicProcessor` post-processing, scored by `eval.score`.
+
+| System | Dev set | BLEU | chrF++ | Geo |
+| --- | --- | ---: | ---: | ---: |
+| 200M distilled base, zero-shot | R0 | 14.66 | 41.66 | 24.71 |
+| **R3 — 200M full fine-tune** | **R0** | **17.67** | **46.43** | **28.64** |
+| 1B zero-shot (= leaderboard 8.00) | R0 | 18.00 | 44.25 | 28.22 |
+
+**Fine-tuning works: +3.93 geo, +15.9% over its own base** (BLEU +3.01,
+chrF++ +4.77). That is the clean, like-for-like read and it is unambiguous.
+
+**Against the 1B it is a near-tie: +0.42 geo, +1.5%** — and the composition is
+odd. chrF++ is up 2.18 while **BLEU is DOWN 0.33**. The fine-tune has learned
+the character and morphology conventions (which is what the diacritic gap
+predicted) without gaining exact n-gram matches. A 211M model has drawn level
+with a 1.1B one on this task.
+
+Wall clock: 1h29m49s on T4 x2, 4,825 steps, effective batch 128.
+Length ratio 0.951 (38.5 hyp chars vs 40.5 ref) — no over-generation.
+
+### Do not read 28.64 > 28.22 as "beats the current submission"
+
+Both numbers are on R0, which is cut from BPCC — and **IndicTrans2 was trained
+on BPCC**, so both systems are partly scored on their own training data.
+Critically, the comparison is not symmetric: R3 has just had *five more epochs*
+of BPCC, so R0 flatters it more than it flatters the zero-shot 1B. The +1.5%
+edge is exactly the size that contamination could manufacture on its own.
+
+Naive extrapolation at the observed 0.505 R0→leaderboard ratio gives **8.12**
+against the current 8.00. That is inside noise. The leaderboard is the only
+instrument that can settle it.
+
+### Training curve (in-training proxy, greedy, NOT comparable to the above)
+
+| Step | Epoch | eval_loss | `geo_proxy` | `len_ratio` |
+| ---: | ---: | ---: | ---: | ---: |
+| 1500 | 1.55 | 2.921 | 37.51 | 0.988 |
+| 2000 | 2.07 | 2.863 | 38.90 | 1.009 |
+| 2500 | 2.59 | 2.824 | 39.29 | 0.986 |
+| 4000 | 4.14 | 2.728 | 42.00 | 0.984 |
+
+Monotonic to the final eval, `eval_empty_preds` 0 throughout. **No overfitting
+at 5 epochs — the model is under-trained.** The 1B LoRA run should not use
+fewer epochs, and more may pay.
+
+## Verdict
+
+Fine-tuning the 200M is a **clear methodological success and a marginal
+leaderboard proposition.** The lift over its own base (+15.9%) is the number
+that generalizes; the tie with the 1B is the number that decides what to do
+next — and it says stop iterating on the 200M and move to the 1B, which starts
+3.51 geo ahead of where this one started.
 
 | Checkpoint | Dev set | BLEU | chrF++ | Geo | Notes |
 | --- | --- | ---: | ---: | ---: | --- |

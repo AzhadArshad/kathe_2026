@@ -40,6 +40,7 @@ from pathlib import Path
 
 import torch
 from IndicTransToolkit.processor import IndicProcessor
+from tqdm.auto import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 SRC_LANG = "eng_Latn"
@@ -99,9 +100,18 @@ def translate(
     order = sorted(range(len(sentences)), key=lambda i: -len(sentences[i].split()))
     out: list[str | None] = [None] * len(sentences)
 
+    # Progress is on stderr so that piping stdout to a file stays clean.
+    bar = tqdm(
+        range(0, len(order), batch_size),
+        total=(len(order) + batch_size - 1) // batch_size,
+        unit="batch",
+        desc=f"decode {device} beam{num_beams}",
+        file=sys.stderr,
+        dynamic_ncols=True,
+    )
     t0 = time.time()
     done = 0
-    for start in range(0, len(order), batch_size):
+    for start in bar:
         idx = order[start:start + batch_size]
         batch = ip.preprocess_batch(
             [sentences[i] for i in idx], src_lang=SRC_LANG, tgt_lang=TGT_LANG
@@ -127,9 +137,8 @@ def translate(
             out[i] = text
         done += len(idx)
         rate = done / max(1e-9, time.time() - t0)
-        print(f"  {done}/{len(sentences)}  {rate:.2f} sent/s  "
-              f"eta {(len(sentences) - done) / max(1e-9, rate) / 60:.1f} min",
-              file=sys.stderr, flush=True)
+        bar.set_postfix_str(f"{done}/{len(sentences)} sents, {rate:.1f} sent/s")
+    bar.close()
 
     if any(o is None for o in out):
         raise SystemExit("internal error: not every sentence was translated")

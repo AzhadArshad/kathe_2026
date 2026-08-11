@@ -47,9 +47,24 @@ dropout: 0.1
 
 num_train_epochs: 5
 max_steps: -1 # -1 = honour num_train_epochs. A positive value overrides it.
-batch_size: 32 # per device
-grad_accum_steps: 2 # effective batch = 32 * 2 GPUs * 2 = 128
-max_seq_length: 256
+
+# batch 32 / seq 256 OOM'd on the T4 at step 0 (2026-08-10). The driver is the
+# decoder vocab: IndicTrans2 en-indic has 122,672 target tokens, and
+# cross_entropy upcasts logits to fp32, so the loss tensor alone is
+# batch * seq * 122672 * 4 bytes — 3.74 GiB at 32/256, against ~2.5 GiB free
+# after weights, gradients and Adam states.
+#
+# Effective batch is UNCHANGED at 128 (16 * 2 GPUs * 4), so the optimization is
+# identical to what was planned — only the memory profile moved.
+batch_size: 16 # per device
+grad_accum_steps: 4 # effective batch = 16 * 2 GPUs * 4 = 128
+
+# Measured on the actual corpus, not guessed: target tokens are mean 33.6,
+# p99.9 116, max 165; source tokens max 118. 256 was pure waste. At 128 we
+# truncate 0.03% of targets (~37 of 123,538) and no sources, and halve the
+# logits tensor again -> 0.94 GiB. Also caps generation_max_length at eval,
+# which is fine: the test set is ~39 characters.
+max_seq_length: 128
 
 # --- evaluation --------------------------------------------------------------
 # Held-out BPCC slice, NOT FLORES: FLORES dev is the knob-tuning set and devtest

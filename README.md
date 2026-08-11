@@ -8,13 +8,22 @@ Model and dataset disclosure: `MODEL_CARD.md`.
 
 ## Gated repositories
 
-Three Hugging Face repos require accepting their terms **before** anything will
-download. Until you do, the failure is a misleading "gated" error on an
-unrelated call:
+These Hugging Face repos require accepting their terms **before** anything will
+download, each one separately — authorization does not carry across repos from
+the same publisher:
 
 - `ai4bharat/indictrans2-en-indic-1B`
+- `ai4bharat/indictrans2-en-indic-dist-200M`
+- `ai4bharat/indictrans2-indic-en-1B` (only if back-translation is attempted)
 - `ai4bharat/BPCC`
 - `facebook/flores`
+
+Accept **all** of them before starting a GPU session. AI4Bharat's gates are
+auto-approved, so it takes seconds — but a missed one surfaces as a `403
+GatedRepoError` partway into a run, and on `ai4bharat/BPCC` it surfaces even
+earlier, as a misleading "gated" error from `get_dataset_config_names` (the
+dataset card and file listing stay publicly visible either way, so neither
+proves you have file access).
 
 Put a token in `.env` as `HF_TOKEN=...` (never committed), or use Kaggle
 Secrets inside a notebook.

@@ -1,0 +1,12 @@
+{
+  "name": "R0 \u2014 R3 200M full fine-tune, beam 5",
+  "lines": 1003,
+  "bleu": 17.671075300697392,
+  "chrf_plus_plus": 46.42740520541838,
+  "geometric_mean": 28.643012645337052,
+  "hyp_chars_per_line": 38.45,
+  "ref_chars_per_line": 40.45,
+  "hyp_ref_char_ratio": 0.9505,
+  "hyp_file": "data/dev/r0/r0.hyp.r3-200m",
+  "ref_file": "data/dev/r0/r0.kas_Arab"
+}

@@ -9,7 +9,10 @@ filled before weights are published (due 2026-08-17).
 - **Competition:** KATHE 2026, Gaash Lab / NIT Srinagar + Bureau of Indian Standards
 - **Author:** Azhad Arshad (solo entry, team *Noore*)
 - **Repository:** `<TBD — public URL, due 2026-08-16>`
-- **Weights:** `<TBD — HF Hub repo>`
+- **Weights:** `Aju360/kathe-r3-200m-full` (R3, 200M full fine-tune) — **private,
+  must be public by 2026-08-17.** HF account is `Aju360`; GitHub is
+  `AzhadArshad`. The two differ, so do not infer one from the other in any
+  published URL.
 
 ---
 

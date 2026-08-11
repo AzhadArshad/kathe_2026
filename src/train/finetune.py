@@ -60,6 +60,7 @@ import sacrebleu
 import yaml
 from datasets import Dataset
 from IndicTransToolkit import IndicDataCollator, IndicProcessor
+import IndicTransToolkit.collator as _itt_collator
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -68,6 +69,35 @@ from transformers import (
     Seq2SeqTrainingArguments,
     set_seed,
 )
+
+# --- upstream bugfix: IndicTransToolkit 1.1.1 IndicDataCollator -------------
+# collator.py puts its imports INSIDE the class body:
+#
+#     @dataclass
+#     class IndicDataCollator:
+#         from transformers.data.data_collator import pad_without_fast_tokenizer_warning
+#         ...
+#         def __call__(self, features, ...):
+#             features = pad_without_fast_tokenizer_warning(...)   # line 40
+#
+# Names bound in a class body are class attributes and are NOT in scope inside
+# that class's methods, so the bare call raises
+# `NameError: name 'pad_without_fast_tokenizer_warning' is not defined` on the
+# very first non-empty batch. The collator is unusable as shipped — this is not
+# a version-skew problem and pinning differently does not avoid it.
+#
+# Injecting the name into the module's globals makes the bare reference resolve
+# through the normal local -> enclosing -> global lookup, with upstream's
+# behaviour otherwise untouched. Preferred over subclassing or swapping in
+# transformers' DataCollatorForSeq2Seq, because IndicDataCollator also forces
+# left-padding and pads labels itself, and IndicTrans2 depends on both.
+#
+# The annotations at collator.py lines 12/14 are fine: they are evaluated in the
+# class body, where the names *are* in scope. Only the line-40 call is broken.
+if not hasattr(_itt_collator, "pad_without_fast_tokenizer_warning"):
+    from transformers.data.data_collator import pad_without_fast_tokenizer_warning
+
+    _itt_collator.pad_without_fast_tokenizer_warning = pad_without_fast_tokenizer_warning
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data.normalize import NormConfig, normalize_many  # noqa: E402
@@ -215,6 +245,87 @@ def git_commit() -> str:
         ).strip()
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def make_checkpoint_portable(output_dir: str) -> None:
+    """Make a saved checkpoint loadable on a machine that is not this one.
+
+    Two defects in what `tokenizer.save_pretrained` writes for IndicTrans2, both
+    of which make the checkpoint load ONLY on the box that produced it. Found
+    2026-08-10, after the R3 checkpoint failed to load off the training host:
+
+    1. `src_vocab_file` / `tgt_vocab_file` are serialized as ABSOLUTE paths into
+       the training machine's HF cache (`/root/.cache/...` on Kaggle). Elsewhere
+       those paths do not exist, and they also collide with the positional
+       arguments `from_pretrained` supplies -> `TypeError: got multiple values
+       for keyword argument 'src_vocab_file'`. The base repo ships neither key;
+       dropping them lets the tokenizer resolve `dict.SRC.json` / `dict.TGT.json`
+       from the checkpoint directory, where they already are.
+
+    2. `auto_map` points back at `ai4bharat/indictrans2-en-indic-dist-200M`,
+       which is a GATED repo. Loading would then require Hub access and an
+       accepted gate — exactly the dependency the live-round package must not
+       have. The tokenizer source is copied in and `auto_map` made local.
+
+    3. **`lm_head.weight` is absent, and its absence silently ZEROES the model.**
+       IndicTrans2 sets `share_decoder_input_output_embed: True`, so `lm_head`
+       ties to `model.decoder.embed_tokens`. `save_pretrained` drops the tied
+       duplicate, which is normally fine — but this architecture's load path
+       resolves the tie the wrong way and overwrites the good embedding with the
+       missing head, leaving both all-zero. `from_pretrained` reports "All the
+       weights ... were initialized from the model checkpoint" while handing
+       back a model that emits EOS immediately and translates everything to "".
+       The only visible hint at save time is a `There were missing keys in the
+       checkpoint model loaded: ['lm_head.weight']` line that reads as benign.
+       Writing the tensor explicitly costs ~250 MB and makes a plain
+       `from_pretrained` correct — which is what the live round will run.
+
+    Safe to call more than once.
+    """
+    import glob
+    import shutil
+
+    ck = Path(output_dir)
+
+    st = ck / "model.safetensors"
+    if st.exists():
+        from safetensors.torch import load_file, save_file
+
+        sd = load_file(str(st))
+        tied = "model.decoder.embed_tokens.weight"
+        if "lm_head.weight" not in sd and tied in sd:
+            # .clone(): safetensors rejects tensors that share storage.
+            sd["lm_head.weight"] = sd[tied].clone()
+            save_file(sd, str(st), metadata={"format": "pt"})
+            print(" | > wrote lm_head.weight into model.safetensors "
+                  "(tied-weight save would otherwise load as all-zero)")
+    cfg_path = ck / "tokenizer_config.json"
+    if not cfg_path.exists():
+        return
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    removed = [k for k in ("src_vocab_file", "tgt_vocab_file", "name_or_path") if k in cfg]
+    for k in removed:
+        cfg.pop(k)
+
+    if not (ck / "tokenization_indictrans.py").exists():
+        hits = glob.glob(str(
+            Path.home() / ".cache/huggingface/modules/transformers_modules"
+            / "**/tokenization_indictrans.py"
+        ), recursive=True)
+        if hits:
+            shutil.copy(hits[0], ck / "tokenization_indictrans.py")
+    if (ck / "tokenization_indictrans.py").exists():
+        cfg["auto_map"] = {
+            "AutoTokenizer": ["tokenization_indictrans.IndicTransTokenizer", None]
+        }
+    else:
+        print(" | > WARNING: tokenization_indictrans.py not vendored — the "
+              "checkpoint will need the GATED base repo to load.")
+
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f" | > checkpoint made portable (dropped {removed or 'nothing'}, "
+          f"tokenizer code vendored)")
 
 
 def main() -> int:
@@ -386,6 +497,7 @@ def main() -> int:
         # no gated-base dependency (PLANNING.md decision 2026-08-07).
         trainer.save_model(output_dir)
         tokenizer.save_pretrained(output_dir)
+        make_checkpoint_portable(output_dir)
         Path(output_dir, "train_config.resolved.yaml").write_text(
             yaml.safe_dump(
                 {**cfg, "data_dir": data_dir, "output_dir": output_dir,

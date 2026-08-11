@@ -22,6 +22,11 @@
 
 set -euo pipefail
 
+# The T4 OOM'd at step 0 with a 2.69 GiB request while 2.56 GiB was free —
+# i.e. fragmentation was part of it, not only total demand. expandable_segments
+# lets the allocator grow a segment instead of needing one contiguous block.
+export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+
 REPO="${REPO:-/kaggle/working/kathe_2026}"
 CORPUS="${CORPUS:-/kaggle/input/kathe-r3-corpus/r3_corpus}"
 CONFIG="${CONFIG:-config/r3_200m_full.yaml}"
@@ -64,6 +69,26 @@ assert transformers.__version__ == "4.46.1", (
 )
 from IndicTransToolkit import IndicProcessor, IndicDataCollator  # fails fast if the pin is wrong
 print("IndicTransToolkit import OK")
+PY
+
+# --- gated-repo preflight ------------------------------------------------------
+# Gate acceptance on the Hub is PER-REPO and does not carry across a publisher's
+# other repos — a token authorized for indictrans2-en-indic-1B still 403s on
+# indictrans2-en-indic-dist-200M. Checking one small file costs a second here and
+# saves discovering it after the dataset build and a partial model download.
+CONFIG="$CONFIG" python - <<'PY'
+import os, sys, yaml
+from huggingface_hub import hf_hub_download
+model = yaml.safe_load(open(os.environ["CONFIG"]))["model"]
+try:
+    hf_hub_download(model, "config.json", token=os.environ.get("HF_TOKEN"))
+    print(f"gated-repo access OK: {model}")
+except Exception as e:
+    sys.exit(
+        f"\nFATAL: cannot access {model}\n  {type(e).__name__}: {e}\n\n"
+        f"Accept the terms at https://huggingface.co/{model} using the SAME "
+        f"account as HF_TOKEN, then re-run. Acceptance is per-repo.\n"
+    )
 PY
 
 # --- smoke test --------------------------------------------------------------
