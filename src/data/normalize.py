@@ -116,15 +116,14 @@ def normalize(text: object, cfg: NormConfig = DEFAULT) -> str:
         s = _MULTISPACE.sub(" ", s)
 
     if cfg.diacritic_lexicon:
-        # Left-context first, unigram as backoff. Context is read from the RAW
-        # previous token, not the restored one, so an early mistake cannot
-        # cascade down the sentence.
+        # Delegate to data.diacritize so the backoff chain has exactly ONE
+        # implementation. It was duplicated here once, and when the lexicon
+        # gained two more context tables this copy silently kept using only the
+        # old flat one — scoring 31.20 instead of 33.50 with no error at all.
+        from data.diacritize import restore
+
         lut, ctx = _lexicon(cfg.diacritic_lexicon)
-        words, out, prev = s.split(), [], "<s>"
-        for w in words:
-            out.append(ctx.get(f"{prev}\t{w}") or lut.get(w, w))
-            prev = w
-        s = " ".join(out)
+        s = restore(s, lut, ctx)
 
     return s.strip()
 
