@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import unicodedata as ud
 from dataclasses import dataclass
+from pathlib import Path
 
 from KashmiriNormalizer import KashmiriNormalizer
 
@@ -63,8 +64,30 @@ class NormConfig:
     # of chrF++. Safe to enable once references are confirmed single-spaced.
     collapse_whitespace: bool = False
 
+    # Path to a diacritic lexicon from `data.diacritize`. Restores kasra, damma
+    # and fatha, which IndicTrans2 CANNOT generate — they exist in its target
+    # vocabulary only as bare standalone tokens, never inside a subword, so beam
+    # search never emits them (see data/diacritize.py). Measured +2.56 geo
+    # (+8.9%) on R0. Applied AFTER the scorer normalizer, because the lexicon is
+    # keyed on scorer-normalized word forms.
+    diacritic_lexicon: str | None = None
+
 
 DEFAULT = NormConfig()
+
+# Cached per path: the lexicon is ~7k entries and normalize() is called once per
+# row, so re-reading it per call would dominate the cost of a 1,730-row run.
+_LEXICON_CACHE: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+
+
+def _lexicon(path: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Return (unigram, left-context) tables. `context` may be empty."""
+    if path not in _LEXICON_CACHE:
+        import json
+
+        blob = json.loads(Path(path).read_text(encoding="utf-8"))
+        _LEXICON_CACHE[path] = (blob["lexicon"], blob.get("context") or {})
+    return _LEXICON_CACHE[path]
 
 
 def normalize(text: object, cfg: NormConfig = DEFAULT) -> str:
@@ -91,6 +114,17 @@ def normalize(text: object, cfg: NormConfig = DEFAULT) -> str:
 
     if cfg.collapse_whitespace:
         s = _MULTISPACE.sub(" ", s)
+
+    if cfg.diacritic_lexicon:
+        # Left-context first, unigram as backoff. Context is read from the RAW
+        # previous token, not the restored one, so an early mistake cannot
+        # cascade down the sentence.
+        lut, ctx = _lexicon(cfg.diacritic_lexicon)
+        words, out, prev = s.split(), [], "<s>"
+        for w in words:
+            out.append(ctx.get(f"{prev}\t{w}") or lut.get(w, w))
+            prev = w
+        s = " ".join(out)
 
     return s.strip()
 

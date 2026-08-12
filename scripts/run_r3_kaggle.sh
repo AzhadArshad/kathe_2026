@@ -58,6 +58,15 @@ pip install -q \
     "KashmiriNormalizer==0.1.0" \
     "peft" "accelerate" "datasets" "sentencepiece" "pyyaml"
 
+# REMOVE torchao. peft's LoRA dispatcher calls is_torchao_available(), which
+# RAISES ImportError when torchao is installed but older than 0.16.0 — it only
+# returns False when the package is absent entirely. The Kaggle image ships
+# torchao 0.10.0, so any `peft: lora` run dies at get_peft_model() before step
+# 1 (cost one session, 2026-08-11). Nothing here uses torchao — it is a
+# quantization backend — so uninstalling is the clean fix, and safer than
+# upgrading it, which would drag torch with it.
+pip uninstall -q -y torchao 2>/dev/null || true
+
 python - <<'PY'
 import torch, transformers
 print(f"torch {torch.__version__}  cuda={torch.cuda.is_available()}  devices={torch.cuda.device_count()}")
@@ -69,6 +78,16 @@ assert transformers.__version__ == "4.46.1", (
 )
 from IndicTransToolkit import IndicProcessor, IndicDataCollator  # fails fast if the pin is wrong
 print("IndicTransToolkit import OK")
+
+# Prove the LoRA path can actually be constructed BEFORE the 4.5 GB download and
+# the dataset build. get_peft_model() failing after all that costs a session.
+import importlib.util
+if importlib.util.find_spec("torchao") is not None:
+    import sys as _s
+    _s.exit("FATAL: torchao is still installed; peft's LoRA dispatcher will "
+            "raise on it. The uninstall above did not take effect.")
+from peft import LoraConfig, get_peft_model
+print("peft LoRA path OK")
 PY
 
 # --- gated-repo preflight ------------------------------------------------------

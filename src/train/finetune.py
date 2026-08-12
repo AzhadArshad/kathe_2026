@@ -57,6 +57,7 @@ from pathlib import Path
 
 import pandas as pd
 import sacrebleu
+import torch
 import yaml
 from datasets import Dataset
 from IndicTransToolkit import IndicDataCollator, IndicProcessor
@@ -437,9 +438,30 @@ def main() -> int:
         logging_steps=cfg["logging_steps"],
         save_total_limit=cfg["save_total_limit"],
         predict_with_generate=True,
-        load_best_model_at_end=True,
+        # OFF for LoRA, and this is not a preference. `_load_best_model()` calls
+        # peft's `load_adapter`, which reaches
+        # `transformers.integrations.tensor_parallel` — a module that does not
+        # exist in transformers 4.46.1, the version IndicTransToolkit forces.
+        # The result is a ModuleNotFoundError AFTER training completes, which
+        # destroys the final save while every training step is already paid for
+        # (2026-08-11: R4 crashed at 4825/4825 after 3h20m).
+        #
+        # The cost is small: `eval_geo_proxy` rose monotonically across R3 and
+        # R4, so the last checkpoint IS the best one. `trainer_state.json`
+        # records `best_model_checkpoint` either way, so a non-monotonic run can
+        # still be recovered by hand.
+        load_best_model_at_end=(cfg["peft"] != "lora"),
         max_steps=cfg["max_steps"],
         num_train_epochs=cfg["num_train_epochs"],
+        # DDP walks the whole autograd graph every micro-batch when this is
+        # True, and HF defaults it to True. Its own warning reports finding no
+        # unused parameters — with LoRA the frozen base has requires_grad=False,
+        # so DDP never considers it. At grad_accum 16 that traversal is paid 16
+        # times per optimizer step, which is why batch 4 measured SLOWER per
+        # step (4.57 s/it) than batch 8 (2.48 s/it) despite identical samples
+        # per step. Default False; set true in config only if a run reports
+        # genuinely unused parameters.
+        ddp_find_unused_parameters=cfg.get("ddp_find_unused_parameters", False),
         per_device_train_batch_size=cfg["batch_size"],
         per_device_eval_batch_size=cfg["batch_size"],
         gradient_accumulation_steps=cfg["grad_accum_steps"],
@@ -486,6 +508,19 @@ def main() -> int:
         ],
     )
 
+    # Report VRAM before the first step. A CUBLAS_STATUS_INTERNAL_ERROR in
+    # backward is nearly always OOM in disguise, and without this line there is
+    # no way to tell a genuinely tight card from a real cuBLAS fault. An
+    # interactive session and a committed run do not always leave the same
+    # amount free (2026-08-11: batch 8 survived one and died at step 0 in the
+    # other).
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        used = torch.cuda.memory_allocated()
+        print(f" | > GPU{torch.cuda.current_device()} "
+              f"free {free / 2**30:.2f} GiB / total {total / 2**30:.2f} GiB "
+              f"| already allocated by this process {used / 2**30:.2f} GiB")
+
     print(" | > Starting training ...")
     try:
         trainer.train(resume_from_checkpoint=args.resume or None)
@@ -493,9 +528,19 @@ def main() -> int:
         print(" | > Training interrupted — saving what exists ...")
 
     if is_main:
-        # For peft=none this writes full merged weights, so the live round has
-        # no gated-base dependency (PLANNING.md decision 2026-08-07).
-        trainer.save_model(output_dir)
+        # MERGED weights, never a bare adapter — the live round must not need
+        # the gated base repo to load anything (PLANNING.md, 2026-08-07).
+        # `trainer.save_model` on a PEFT-wrapped model writes only the adapter,
+        # so LoRA runs are merged first. merge_and_unload() folds B·A back into
+        # W and returns a plain model that loads with a normal from_pretrained.
+        if cfg["peft"] == "lora":
+            merged = trainer.model
+            merged = getattr(merged, "module", merged)  # unwrap DDP
+            merged = merged.merge_and_unload()
+            merged.save_pretrained(output_dir, safe_serialization=True)
+            print(" | > LoRA adapter merged into base weights before saving")
+        else:
+            trainer.save_model(output_dir)
         tokenizer.save_pretrained(output_dir)
         make_checkpoint_portable(output_dir)
         Path(output_dir, "train_config.resolved.yaml").write_text(

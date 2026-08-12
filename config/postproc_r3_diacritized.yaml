@@ -1,0 +1,26 @@
+# Post-processing for R3 + diacritic restoration (submission 003).
+#
+# Identical to postproc_r3.yaml except for `diacritic_lexicon`.
+
+scorer_normalizer: true
+unicode_form: null
+
+# Measured OFF on R0 (28.64 vs 28.62). See postproc_r3.yaml.
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+
+# THE CHANGE. IndicTrans2 cannot emit kasra/damma/fatha: in its 122,672-entry
+# target vocabulary each appears in exactly ONE token, the bare standalone mark,
+# never inside a subword. Beam search therefore never produces them — measured
+# EXACTLY 0 across 1,003 R0 sentences despite 270,799/105,855/61,885 occurrences
+# in the training targets. This is a property of the frozen pretrained
+# vocabulary and cannot be fixed by fine-tuning.
+#
+# Lexicon: unigram, built from TRAIN targets only (no R0 leakage), min_count=3,
+# dominance=0.0 — both swept on R0 (see src/data/diacritize.py).
+#
+#   R0: 28.64 -> 31.20 geo (+2.56, +8.9%)
+#   englishdev coverage 13.47% of words; diacritics 5.65 -> 8.31 per 100c
+#   (R0 references sit at 9.63)
+diacritic_lexicon: data/processed/diacritic_lexicon.json

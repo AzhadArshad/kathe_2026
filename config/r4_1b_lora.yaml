@@ -1,0 +1,110 @@
+# R4 — LoRA fine-tune of the 1B. The real submission model.
+#
+# R3 established the method on the 200M: +15.9% over its own base. This applies
+# it to the bigger model, which starts 3.51 geo ahead on R0 (28.22 zero-shot vs
+# the 200M's 24.71) before any training.
+#
+# Target hardware: Kaggle GPU T4 x2, torchrun DDP. PROJECT_NOTES.md §5 — not locally.
+
+model: ai4bharat/indictrans2-en-indic-1B # MIT, GATED — accept terms first
+src_lang: eng_Latn
+tgt_lang: kas_Arab
+
+data_dir: data/processed/r3_corpus # same corpus as R3; R0 + eval slice excluded
+output_dir: output/r4-1b-lora
+seed: 42
+
+# --- adaptation method -------------------------------------------------------
+# LoRA, not a full fine-tune, and this is forced rather than preferred. A full
+# 1B fine-tune needs roughly 4.4 GB weights + 4.4 GB gradients + 8.8 GB Adam
+# states = 17.6 GB before activations, against a 15 GB T4 — and DDP replicates
+# all of it on every card. LoRA freezes the base and trains only the adapters,
+# so the optimizer term nearly vanishes.
+peft: lora
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.1
+  # EXTENDED beyond AI4Bharat's q_proj,k_proj default. Query and key alone
+  # change only where attention looks; adding v_proj and out_proj lets it change
+  # what is actually carried and written back, which is usually where LoRA earns
+  # its quality. Cost is small — still ~1% of parameters.
+  # If VRAM is tight, drop out_proj first.
+  target_modules: q_proj,k_proj,v_proj,out_proj
+
+# --- optimization ------------------------------------------------------------
+# 2e-4, NOT the 5e-5 used for R3, and the difference is deliberate. 5e-5 was
+# chosen because a full fine-tune moves every parameter of a distilled
+# checkpoint, and AI4Bharat's 2e-4 would erase pretrained ability within a few
+# hundred steps. LoRA moves only the adapter, which starts at zero and needs a
+# larger step to learn anything — 2e-4 is AI4Bharat's own LoRA value.
+# Same number, opposite conclusion, because the method differs.
+learning_rate: 2.0e-4
+lr_scheduler: inverse_sqrt
+warmup_steps: 1000
+weight_decay: 0.01
+max_grad_norm: 1.0
+adam_beta1: 0.9
+adam_beta2: 0.98
+optimizer: adamw_torch
+label_smoothing: 0.1
+dropout: 0.1
+
+# R3 was still improving at its final eval (geo_proxy 37.51 -> 42.00 across
+# epochs 1.5 -> 4.1, no turnover), so it was under-trained at 5 epochs. Do not
+# shorten this; if anything the ceiling is higher.
+num_train_epochs: 5
+max_steps: -1
+
+# The 1B is ~5x the 200M, so per-device batch drops and accumulation rises to
+# hold the effective batch at 128 — identical optimization to R3, different
+# memory profile. Recompute `batch * seq * 122672 * 4` before changing either:
+# with this decoder vocab the fp32 logits tensor, not the parameter count, is
+# what fills the card. Here 8 * 128 * 122672 * 4 = 0.47 GiB.
+# MEASURED 2026-08-11, with the VRAM probe in finetune.py: at batch 4 the card
+# reports **10.27 GiB free of 14.56**, only 4.18 allocated. There is no memory
+# pressure here, so the earlier CUBLAS_STATUS_INTERNAL_ERROR at batch 8 was
+# almost certainly NOT OOM. Batch 4 was an over-correction and it is also
+# SLOWER: 4.57 s/it against batch 8's 2.48 s/it, because both push 64 samples
+# per GPU per optimizer step but batch 4 pays the per-micro-batch DDP overhead
+# 16 times instead of 8.
+#
+# Back to 8, with ddp_find_unused_parameters disabled below — the real fix.
+# A step-0 failure costs three minutes, so this is cheap to verify.
+batch_size: 8
+grad_accum_steps: 8 # effective batch = 8 * 2 GPUs * 8 = 128
+max_seq_length: 128 # measured: targets p99.9 = 116 tokens, max 165
+
+# DDP traverses the full autograd graph every micro-batch when True, and HF
+# defaults it to True. DDP's own warning reported finding NO unused parameters:
+# with LoRA the frozen base is requires_grad=False, so it is never considered.
+# This was pure overhead on every micro-batch of both previous attempts.
+ddp_find_unused_parameters: false
+
+# --- evaluation --------------------------------------------------------------
+eval_steps: 500
+save_steps: 500
+logging_steps: 100
+save_total_limit: 2
+eval_num_beams: 1 # greedy — ranks checkpoints, does not report
+metric_for_best_model: eval_geo_proxy
+greater_is_better: true
+early_stopping_patience: 5
+early_stopping_threshold: 1.0e-3
+print_samples: true
+
+# --- runtime -----------------------------------------------------------------
+fp16: true # T4 is Turing
+group_by_length: true
+sortish_sampler: false
+num_workers: 2
+num_proc: 4
+report_to: none
+
+# --- checkpointing -----------------------------------------------------------
+# ON this time. R3 ran with push_to_hub false and nearly lost 90 minutes of T4
+# time twice — /kaggle/working does not survive a restart. Requires HF_TOKEN
+# with WRITE scope in the session (Kaggle secret HF_TOKEN_WRITE).
+push_to_hub: true
+hub_model_id: Aju360/kathe-r4-1b-lora
+hub_private_repo: true
