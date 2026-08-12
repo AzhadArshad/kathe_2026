@@ -81,10 +81,14 @@ mkdir -p "$OUT" models/restore experiments/r11-restore data/dev/r0 data/processe
 # upgrading over the 4.46.1 pin (PLANNING.md 2026-08-10). Not installing at all
 # removes that failure mode instead of guarding it.
 export PYTHONPATH="$REPO/src:${PYTHONPATH:-}"
-python - <<'PY'
-import torch
+# Fail here rather than 40 minutes into a CPU run that looked like it was
+# working. `REQUIRE_GPU=0` is for dry-running the script off Kaggle.
+REQUIRE_GPU="${REQUIRE_GPU:-1}" python - <<'PY'
+import os, torch
 print("torch", torch.__version__, "| cuda", torch.cuda.is_available())
-assert torch.cuda.is_available(), "no GPU — set the accelerator to T4"
+if os.environ["REQUIRE_GPU"] == "1":
+    assert torch.cuda.is_available(), (
+        "no GPU — set the accelerator to T4, or pass REQUIRE_GPU=0 for a dry run")
 PY
 
 # data/ is gitignored, so the clone has none of these. Copy from the bundle.
