@@ -339,12 +339,14 @@ def evaluate_refs(checkpoint: Path, refs: Path, device: str,
         out = r.restore_many(stripped)
         wall = time.time() - t0
         rows = score_texts(gold, out)
-        chars = sum(len(x) for x in out)
+        # Each density is over its OWN character count. Using the restored
+        # text's length for both makes the reference look denser than it is,
+        # because a restored line that inserted nothing is shorter.
         marks = sum(1 for x in out for c in x if c in "َُِ")
         gmarks = sum(1 for x in gold for c in x if c in "َُِ")
         rows["DENSITY"] = {
-            "restored_per_100c": round(100 * marks / max(1, chars), 2),
-            "reference_per_100c": round(100 * gmarks / max(1, chars), 2),
+            "restored_per_100c": round(100 * marks / max(1, sum(len(x) for x in out)), 2),
+            "reference_per_100c": round(100 * gmarks / max(1, sum(len(x) for x in gold)), 2),
         }
         rows["WALL"] = {"seconds": round(wall, 2), "lines": len(out),
                         "per_line_ms": round(1000 * wall / max(1, len(out)), 3)}

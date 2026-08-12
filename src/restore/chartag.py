@@ -76,9 +76,15 @@ def encode(text: str) -> tuple[str, list[int]]:
     labels: list[int] = []
     for ch in text:
         if ch in RESTORABLE:
-            if base and labels[-1] == 0:  # first mark of a run wins
+            # Attach to the preceding character unless it is whitespace. A mark
+            # after a space is corpus noise — 345 occurrences in 679,144 across
+            # all three corpora — and allowing the label would let a negative
+            # `none_bias` manufacture them at inference, where they are
+            # guaranteed errors. Dropping it here and masking the same positions
+            # in `Restorer` keeps training and inference agreeing.
+            if base and labels[-1] == 0 and not base[-1].isspace():
                 labels[-1] = MARK_INDEX[ch]
-            continue  # leading mark, or a second mark on the same base: drop
+            continue  # leading mark, mark on a space, or a second mark: drop
         base.append(ch)
         labels.append(0)
     return "".join(base), labels
@@ -301,7 +307,11 @@ class Restorer:
                     logits[..., 0] += self.none_bias
                 pred = logits.argmax(-1).cpu()
             for i, p in enumerate(batch):
-                out.append(pred[i, : len(p)].tolist())
+                labels = pred[i, : len(p)].tolist()
+                # No mark may follow whitespace — see `encode`. This is the
+                # inference half of that rule; without it `none_bias` buys
+                # recall by inventing marks in the one place they cannot go.
+                out.append([0 if c.isspace() else y for c, y in zip(p, labels)])
         return out
 
     def restore_many(self, texts: list[str]) -> list[str]:

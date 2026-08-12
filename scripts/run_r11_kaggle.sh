@@ -59,6 +59,17 @@ DEVICE="${DEVICE:-cuda}"
 EPOCHS="${EPOCHS:-6}"
 BATCH="${BATCH:-64}"
 
+# The repo is PRIVATE, so the bundle ships a copy of src/ and scripts/ as well
+# and no GitHub token is needed. If REPO is already a clone this is a no-op; if
+# it is not, materialise it from the bundle. Either way the code has to end up
+# under /kaggle/working, because /kaggle/input is read-only and this script
+# writes models/ and experiments/.
+if [ ! -d "$REPO/src" ]; then
+  echo "  no clone at $REPO — using the copy shipped in $BUNDLE/code"
+  mkdir -p "$REPO"
+  cp -r "$BUNDLE/code/." "$REPO/"
+fi
+
 cd "$REPO"
 mkdir -p "$OUT" models/restore experiments/r11-restore data/dev/r0 data/processed
 
