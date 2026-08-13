@@ -1,0 +1,27 @@
+# Submission 007 — R3 + diacritic lexicon from BPCC + EXTERNAL combined.
+#
+# Same model, same decode as submissions 002-005. Only the lexicon source
+# changes: nawabhussain/Kashmiri-Language-Corpus (Apache-2.0, 47,344 sentences)
+# instead of BPCC train targets.
+#
+# Rationale: submission 005 regressed (11.70 -> 11.08) because a large
+# BPCC-derived context table memorised BPCC word sequences, and R0 — itself cut
+# from BPCC — rewarded exactly that. A lexicon built from a DIFFERENT corpus
+# cannot overfit to R0's provenance.
+#
+# Two independent signals favour it:
+#   R0 geo    32.79  vs BPCC-only 32.56 — it wins on BPCC's own home turf,
+#                    which R0 is biased against.
+#   density   9.65 per 100c on the real test input, against R0 references at
+#             9.63. Sub 004 gave 8.84; sub 005 gave 8.51 and regressed.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json
+
+# NOTE: this variant scores HIGHER on R0 (33.36 vs 32.79) but its test-set
+# density is 9.09, further from the 9.63 reference than external-only's 9.65.
+# The two signals disagree, so 006 and 007 are submitted together and the
+# leaderboard decides. R0 has already been wrong once about exactly this.

@@ -78,6 +78,35 @@ filter stages are documented in `PLANNING.md` §"Data pipeline"). Of these,
 `wiki/kas_Arab.tsv` is byte-identical to `bpcc-seed-v1` and is skipped
 structurally rather than counted twice.
 
+### Used for post-processing only (no weights derived)
+
+| Corpus | Source | Licence | Size | Role |
+| --- | --- | --- | ---: | --- |
+| Kashmiri-Language-Corpus | `nawabhussain/Kashmiri-Language-Corpus` | Apache-2.0 | 47,344 sentences | Monolingual Kashmiri. Builds the diacritic-restoration lexicon, and part of the R11 restorer's training text. |
+| Kashmiri-English Parallel Corpus, `HuggingFace 30K/Kashmiri.txt` | `SMUQamar/Kashmiri-English-Parallel-Corpus` (Qumar et al., DOI 10.57967/hf/3061) | **CC-BY-NC-SA-4.0** | 29,999 sentences, 16,505 after dedup | Kashmiri side only, monolingual. R11 restorer training text. Access is granted **manually** by the owners. |
+
+Disclosed under the organizers' 2026-08-07 ruling. These are listed separately
+from the translation training mix because they never reach the translation
+model — they inform post-processing applied after decoding.
+
+**Licence chain for the R11 restorer.** The SMUQamar corpus is
+CC-BY-NC-SA-4.0, so any restorer checkpoint trained on it is a derivative work
+under ShareAlike and **must be published CC-BY-NC-SA-4.0, not Apache-2.0**, with
+attribution and the NonCommercial term intact. This does not touch the
+translation weights (`Aju360/kathe-r3-200m-full`), which derive from BPCC and
+IndicTrans2 only. Per PROJECT_NOTES.md §2.7, do not claim Apache-2.0 over something
+that cannot be relicensed. As of 2026-08-13 no R11 checkpoint has been
+published; if one is, this paragraph is the licence statement that goes with it.
+
+**Dev-set contamination, disclosed.** 419 of the 1,003 sentences in the
+project's R0 development set (and 410 of the 997-line evaluation slice) appear
+verbatim in `nawabhussain/Kashmiri-Language-Corpus`. The diacritic lexicon
+behind submissions 006 and 007 was built over that corpus unfiltered, so those
+submissions' **R0 scores** are inflated by roughly 0.36 geometric-mean points.
+Their **leaderboard** scores are unaffected: the KATHE test set is separate from
+R0 and shares no sentences with either corpus. Restoration artifacts built after
+2026-08-13 exclude the dev references by exact stripped-and-normalized string.
+
 ### Evaluation only, never trained on
 
 | Corpus | Source | Licence | Size | Role |
@@ -90,7 +119,8 @@ structurally rather than counted twice.
 
 | Corpus | Licence | Status |
 | --- | --- | --- |
-| `SMUQamar/Kashmiri-English-Dataset-270K` | `<TBD — verify on the Hub before use>` | Not added. Register is a closer match to the test set than BPCC's. **If added, this table must be updated in the same commit.** |
+| `SMUQamar/Kashmiri-English-Dataset-270K` | CC-BY-NC-SA-4.0 | Not added — no access granted. The related 30K corpus from the same authors IS used, and is disclosed above. |
+| `injilashah/Kashmiri-terms` | undeclared | **Rejected on inspection 2026-08-13.** Despite the name its 396 rows are English ASR prompt text — zero Perso-Arabic, 0.00 diacritics per 100 characters. |
 
 ### Tooling that touches data but not weights
 

@@ -1,0 +1,78 @@
+# R10 — feature-weighted reranking over the R5 candidate pool.
+#
+# R5 established that MBR loses (32.67 vs beam's 33.36 on R0) and diagnosed why:
+# chrF++ consensus measures typicality, and the mode of the sampling
+# distribution is what beam already returns. That is not re-opened here.
+#
+# What R5 also measured is why this file exists. Oracle selection over the SAME
+# 32-candidate pool scores 44.95 with the lexicon against sub 007's 33.36, and a
+# sample beats beam in 853 of 1,003 sentences. The candidates are good; the
+# selector is the problem. So keep consensus as one term and add features that
+# know what the competition scores.
+#
+# Selection measured at 0.017 s/sentence in R5, so a wide sweep over one
+# generated pool is essentially free. Generation knobs below are inherited from
+# config/mbr_r5_200m.yaml and MUST match the pool being reranked.
+#
+#   python -m decode.rerank tune --config config/rerank_r10.yaml \
+#       --candidates data/dev/r0/pools/pool.r0.200m.jsonl \
+#       --refs data/dev/r0/r0.kas_Arab \
+#       --report experiments/r10-rerank/tuning.json
+#
+#   python -m decode.rerank select --config config/rerank_r10.yaml \
+#       --candidates data/dev/r0/pools/pool.r0.200m.jsonl \
+#       --output data/dev/r0/r0.hyp.rerank
+
+model: models/r3-200m-full
+system: r3-200m
+
+# --- candidate pool (must match the generated pool) --------------------------
+pool_size: 32
+sampling: epsilon
+epsilon_cutoff: 0.02
+temperature: 1.0
+include_beam: true # candidate 0 is beam-5, and is also the tie-break floor
+beam_size: 5
+length_penalty: 1.0
+max_new_tokens: 256
+batch_size: 8
+seed: 42
+device: auto
+
+# --- utility (the consensus feature) -----------------------------------------
+utility_metric: chrf++
+char_order: 6
+word_order: 2
+beta: 2
+utility_normalize: scorer
+include_self: false
+
+# --- reranking ---------------------------------------------------------------
+# Weights multiply features that are all oriented HIGHER = BETTER and all O(1),
+# so they are directly comparable. The argmax is invariant to positive rescaling
+# of the whole vector, so only the ratios matter.
+#
+# These are the defaults, i.e. consensus-only = MBR. `tune --write-weights`
+# overwrites them with a fitted vector; do not hand-edit them without recording
+# the held-out number that justified the change.
+w_consensus: 1.0
+w_density: 0.0
+w_lexcov: 0.0
+w_length: 0.0
+w_urdu: 0.0
+
+# Reference statistics of R0, measured not assumed. `tune` re-measures both from
+# the reference file it is handed and refuses to run if they disagree by >5%,
+# because a stale target turns two of the five features into noise.
+target_density: 9.63
+target_length_ratio: 1.037
+
+# restored | raw. `restored` measures the density the SUBMITTED row will have,
+# which is what 9.63 is a target for — but restoration reads the lexicon, so
+# this couples the feature to BPCC provenance indirectly. `raw` is
+# provenance-free and measures a density no submitted row ever has.
+density_on: restored
+
+# Submission 007's production lexicon: BPCC train targets + the nawabhussain
+# external corpus, left-context mode.
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json

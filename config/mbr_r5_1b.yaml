@@ -1,0 +1,50 @@
+# R5 — candidate generation from the 1B zero-shot model, for the CROSS-SYSTEM
+# pool. This file only GENERATES; selection over the merged pool is driven by
+# config/mbr_r5_cross.yaml.
+#
+# Why the 1B zero-shot and not R4: R4 (1B LoRA) scored BELOW its own zero-shot
+# base on R0 — 27.78 vs 28.22 — because IndicTrans2 was already trained on BPCC,
+# so fine-tuning it on BPCC had nothing to recover (PLANNING.md 2026-08-12). The
+# zero-shot 1B is the stronger and simpler second opinion.
+#
+# The premise of a cross-system pool is that the two models make DIFFERENT
+# errors, so a candidate both would endorse is more likely right than either
+# model's own favourite. It is also the one place the 1B can still contribute
+# after the training line closed.
+#
+# GPU ONLY. Do not run this on the M2 Air: the 1B at beam width already
+# exhausted 8 GB of unified memory and forced a shutdown (PLANNING.md
+# 2026-08-10), and 32 return sequences is far heavier again.
+#
+#   python -m decode.mbr generate --config config/mbr_r5_1b.yaml \
+#       --input data/dev/r0/r0.eng_Latn --output data/dev/r0/pool.1b.jsonl
+
+model: ai4bharat/indictrans2-en-indic-1B # MIT, GATED — accept terms first
+system: it2-1b-zeroshot
+
+pool_size: 32
+sampling: epsilon
+epsilon_cutoff: 0.02
+temperature: 1.0
+
+num_beam_groups: 8
+diversity_penalty: 0.5
+
+include_beam: true
+beam_size: 5
+length_penalty: 1.0
+
+max_new_tokens: 256
+
+# Half the 200M's batch: 4.5x the parameters and the same 32 sequences in
+# flight per source sentence. 4 * 32 = 128 concurrent sequences on a T4.
+batch_size: 4
+seed: 42
+device: auto
+
+utility_metric: chrf++
+char_order: 6
+word_order: 2
+beta: 2
+utility_normalize: scorer
+include_self: false

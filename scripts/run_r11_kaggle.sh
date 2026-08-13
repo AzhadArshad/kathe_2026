@@ -4,9 +4,12 @@
 # Run from a Kaggle Notebook cell as:  !bash scripts/run_r11_kaggle.sh
 #
 # What it does, in order:
-#   1. trains the char tagger on ALL THREE corpora
-#   2. trains a second one on BPCC ONLY — the provenance control
+#   1. trains the char tagger once per ARM — a data-volume / orthographic-
+#      consistency sweep over the same corpus (all / clean / dense; see ARMS)
+#   2. after each, per-mark P/R on R0 plus the TAIL PRECISION split
 #   3. measures CPU wall-clock restoring the 1,730-row test decode
+#   4. optionally publishes the restorer to the HF Hub (PUSH_HF=1, off by
+#      default) — the RESTORER only, never the translation weights
 #
 # WHAT IT DELIBERATELY DOES NOT DO: score anything against the competition
 # metric. That needs `KashmiriNormalizer==0.1.0` and `sacrebleu==2.6.0`, which
@@ -40,15 +43,21 @@
 #   2. A Kaggle Dataset holding data/processed/r11_kaggle_bundle/, which
 #      `python -m restore.build_text` produces locally. Attach it and point
 #      BUNDLE at it. No HF_TOKEN and no internet are needed by this script.
+#   3. ONLY if publishing (PUSH_HF=1): Internet ON and a Kaggle Secret
+#      HF_TOKEN_WRITE. Never the read HF_TOKEN — see push_restorer_hf.py.
 #
 # Local step that produces the bundle (run once, before the session):
 #   uv run python -m restore.build_text \
-#     --source bpcc     data/processed/r3_corpus/train/eng_Latn-kas_Arab/train.kas_Arab \
+#     --source bpcc     data/processed/bpcc_kas_clean.jsonl \
 #     --source external data/processed/external_nawabhussain.kas_Arab \
 #     --source qamar30k "<HuggingFace 30K/Kashmiri.txt>" \
 #     --exclude data/dev/r0/r0.kas_Arab \
 #               data/processed/r3_corpus/dev/eng_Latn-kas_Arab/dev.kas_Arab \
 #     --output  data/processed/restore_text.jsonl
+#
+# BPCC is passed as the .jsonl so each subcorpus keeps its own tag
+# (`bpcc:daily`, `bpcc:nllb-seed`, ...). They are not one convention: nllb-seed
+# and nllb-filtered mark at ~1.6/100c against 5.8-6.9 for daily and seed-v1.
 
 set -euo pipefail
 
@@ -56,7 +65,7 @@ REPO="${REPO:-/kaggle/working/kathe_2026}"
 BUNDLE="${BUNDLE:-/kaggle/input/kathe-r11-text}"
 OUT="${OUT:-/kaggle/working/r11}"
 DEVICE="${DEVICE:-cuda}"
-EPOCHS="${EPOCHS:-6}"
+EPOCHS="${EPOCHS:-20}"
 BATCH="${BATCH:-64}"
 
 # Locate the bundle by its CONTENTS, not by one hard-coded mount point. Kaggle
@@ -118,6 +127,25 @@ if os.environ["REQUIRE_GPU"] == "1":
         "no GPU — set the accelerator to T4, or pass REQUIRE_GPU=0 for a dry run")
 PY
 
+# If publishing is on, check the credentials NOW rather than discovering after
+# the first 50-minute arm that the secret was never set. Same reason the GPU
+# assert is above: a config error should cost seconds, not an arm.
+if [ "${PUSH_HF:-0}" = "1" ]; then
+  if [ -z "${HF_TOKEN_WRITE:-}" ]; then
+    echo "FATAL: PUSH_HF=1 but HF_TOKEN_WRITE is unset. Add the Kaggle Secret," >&2
+    echo "       or run without PUSH_HF and download the weights by hand." >&2
+    exit 1
+  fi
+  if [ "${HF_TOKEN_WRITE:-}" = "${HF_TOKEN:-__unset__}" ]; then
+    echo "FATAL: HF_TOKEN_WRITE equals HF_TOKEN. They are kept separate so a" >&2
+    echo "       leak of the read token cannot overwrite published weights." >&2
+    exit 1
+  fi
+  python -c "import huggingface_hub" 2>/dev/null || {
+    echo "FATAL: PUSH_HF=1 but huggingface_hub is not importable." >&2; exit 1; }
+  echo "  publishing ENABLED -> ${HF_REPO:-Aju360/kathe-r11-restorer} (+ -nc), private"
+fi
+
 # data/ is gitignored, so the clone has none of these. Copy from the bundle.
 cp "$BUNDLE/restore_text.jsonl" data/processed/
 # The bundle ships these ALREADY scorer-normalized, so nothing here needs
@@ -125,33 +153,164 @@ cp "$BUNDLE/restore_text.jsonl" data/processed/
 # normalized (0 of 1,003 lines changed).
 cp "$BUNDLE/r0.kas_Arab.norm" data/dev/r0/r0.kas_Arab
 cp "$BUNDLE/test.hyp.r3-200m.txt" data/processed/
+# The lexicon is needed only for the TAIL PRECISION split — the number this
+# experiment turns on. It is a plain JSON dict; no scorer dependency.
+cp "$BUNDLE/lexicon_clean_all.json" data/processed/
 
-# --------------------------------------------------------- 1/2. two models --
+# ------------------------------------------------------------- the arms --
 # Same seed, same hyperparameters, same held-out fraction. The ONLY difference
-# between the two runs is --sources, so a score difference is provenance.
-for VARIANT in all bpcc; do
-  EXTRA=""
-  [ "$VARIANT" = "bpcc" ] && EXTRA="--sources bpcc"
-  python -u -m restore.train fit \
-    --corpus data/processed/restore_text.jsonl \
-    --out "models/restore/r11_${VARIANT}.pt" \
-    --device "$DEVICE" --epochs "$EPOCHS" --batch-size "$BATCH" \
-    --refs data/dev/r0/r0.kas_Arab --none-bias-sweep 0.0 -0.5 -1.0 -1.5 \
-    $EXTRA 2>&1 | tee "$OUT/fit_${VARIANT}.log"
-  cp "models/restore/r11_${VARIANT}.pt" "models/restore/r11_${VARIANT}.meta.json" "$OUT/"
+# between the runs is --sources, so a score difference is provenance.
+#
+# ARMS — a data-volume / orthographic-consistency sweep. R0 references sit at
+# 4.68 restorable per 100 characters:
+#
+#   arm     tags  lines     marks    density  what it drops
+#   all        8  168,689   679,734  4.44     nothing — the control
+#   clean      5  145,716   637,261  4.86     nllb-seed, nllb-filtered, qamar30k
+#   dense      3   58,467   352,506  6.73     ... and seed-v2, seed-latest
+#   bpcc       6  112,236   438,539  4.03     the original 2026-08-13 control
+#
+# `all` answers "was 6 epochs simply too few?" — it is last run's data with a
+# 20-epoch schedule. `clean` and `dense` answer "does a consistent convention
+# beat more data?", at two strengths: `clean` is a 3-point shift and `dense` a
+# 2.3x one, buying orthographic consistency by giving up 65% of the corpus.
+#
+# NOTE `dense` OVERSHOOTS the target (6.73 vs 4.68) by more than `all`
+# undershoots it, and R0's own 4.68 is about two-thirds an artifact of how R0
+# was sampled (PLANNING.md 2026-08-13), so "aim at 4.68" is not a well-founded
+# objective. `dense` is here to bound the effect, not because 6.73 is right.
+#
+# Judge these on TAIL PRECISION — the per-mark precision on words the lexicon
+# does not know, printed by the --refs evaluation. Micro-F1, held-out loss and
+# output density all improve without the score following (results.md). If all
+# three stall near the 6-epoch baseline of 34.7%, the constraint is the model's
+# ability to generalise to unseen morphology and no reslicing of this corpus
+# addresses it.
+ARMS="${ARMS:-all clean dense}"
+FAILED=""
+PUSH_FAILED=""
+
+# Validate every arm name BEFORE training anything. A typo in ARMS is a config
+# error, and discovering it after 50 minutes of arm 1 — then aborting the arms
+# that would have followed — is the worst of both behaviours.
+for VARIANT in $ARMS; do
+  case "$VARIANT" in
+    all|bpcc|clean|dense) ;;
+    *) echo "FATAL: unknown arm '$VARIANT' (want: all, bpcc, clean, dense)" >&2
+       exit 1 ;;
+  esac
 done
+echo "  arms to run:$( for a in $ARMS; do printf ' %s' "$a"; done )  (${EPOCHS} epochs each)"
+
+for VARIANT in $ARMS; do
+  # A `case` rather than `[ x = y ] && VAR=...`: under `set -e` the latter is a
+  # failing AND-OR list on every non-matching arm, which survives only by a
+  # POSIX exemption and is one edit away from aborting the run.
+  case "$VARIANT" in
+    all)   EXTRA="" ;;
+    bpcc)  EXTRA="--sources bpcc" ;;
+    clean) EXTRA="--sources bpcc:bpcc-seed-v2 bpcc:bpcc-seed-v1 bpcc:bpcc-seed-latest bpcc:daily external" ;;
+    dense) EXTRA="--sources bpcc:daily bpcc:bpcc-seed-v1 external" ;;
+    *)     echo "FATAL: unknown arm '$VARIANT' (want: all, bpcc, clean, dense)" >&2; exit 1 ;;
+  esac
+  # Each arm is INDEPENDENT and its results are copied out the moment it
+  # finishes. A three-arm sweep is ~2 hours, which means it is run as a Kaggle
+  # commit rather than interactively — and a commit that dies partway may not
+  # preserve /kaggle/working at all. Letting `set -e` abort the script on arm 3
+  # would therefore discard arms 1 and 2 as well. Failures are recorded and
+  # reported at the end instead.
+  if python -u -m restore.train fit \
+      --corpus data/processed/restore_text.jsonl \
+      --out "models/restore/r11_${VARIANT}.pt" \
+      --device "$DEVICE" --epochs "$EPOCHS" --batch-size "$BATCH" \
+      --refs data/dev/r0/r0.kas_Arab --none-bias-sweep 0.0 -0.5 -1.0 -1.5 \
+      --lexicon data/processed/lexicon_clean_all.json \
+      $EXTRA 2>&1 | tee "$OUT/fit_${VARIANT}.log"; then
+    # `*_last.pt` exists only when the best epoch was not the final one.
+    cp models/restore/r11_${VARIANT}*.pt models/restore/r11_${VARIANT}*.meta.json "$OUT/"
+    echo "  == arm '$VARIANT' OK; artifacts copied to $OUT"
+    # Publish THIS arm now, not at the end. A three-arm sweep is ~2 hours and
+    # is run as a commit; a commit that dies partway may preserve nothing from
+    # /kaggle/working. R4 lost its save path after 3h20m and survived only
+    # because checkpoints were already on the Hub (PLANNING.md 2026-08-12) —
+    # the same reasoning applies once a run is long enough to be worth losing.
+    if [ "${PUSH_HF:-0}" = "1" ]; then
+      if python scripts/push_restorer_hf.py --checkpoints "$OUT" \
+           --only "$VARIANT" --repo "${HF_REPO:-Aju360/kathe-r11-restorer}" \
+           --yes 2>&1 | tee -a "$OUT/hf_push.log"; then
+        echo "  == arm '$VARIANT' published"
+      else
+        PUSH_FAILED="$PUSH_FAILED $VARIANT"
+        echo "  == arm '$VARIANT' upload FAILED (weights are safe in $OUT)" >&2
+      fi
+    fi
+  else
+    FAILED="$FAILED $VARIANT"
+    echo "  == arm '$VARIANT' FAILED — continuing with the remaining arms." >&2
+  fi
+done
+
+if [ -n "$FAILED" ]; then
+  echo "WARNING: these arms failed:$FAILED (see $OUT/fit_*.log)" >&2
+fi
 
 # ------------------------------------------- 3. live-round wall-clock, 1,730 --
 # The organizers run the deliverable on their hardware and no GPU is promised,
 # so the number that matters is CPU, single process.
-python - <<'PY' 2>&1 | tee "$OUT/wallclock.log"
-import sys, time
+# Time the FIRST arm, whichever it is — hardcoding r11_all.pt breaks any run
+# whose ARMS does not include "all".
+# Written as a plain loop, NOT inside $( ). A `case` pattern's closing paren
+# terminates a command substitution, so the one-liner form is a syntax error
+# that `bash -n` does not catch and that only fires here — at the end of a
+# two-hour run.
+FIRST_ARM=""
+for a in $ARMS; do
+  case " $FAILED " in
+    *" $a "*) ;;                       # this arm failed; skip it
+    *) FIRST_ARM="$a"; break ;;
+  esac
+done
+if [ -z "$FIRST_ARM" ]; then
+  echo "FATAL: every arm failed; nothing to time." >&2
+  exit 1
+fi
+CKPT="models/restore/r11_${FIRST_ARM}.pt" python - <<'PY' 2>&1 | tee "$OUT/wallclock.log"
+import os, sys, time
 sys.path.insert(0, "src")
 from restore.chartag import Restorer
 lines = [l.rstrip("\n") for l in open("data/processed/test.hyp.r3-200m.txt", encoding="utf-8")]
-r = Restorer("models/restore/r11_all.pt", device="cpu")
+r = Restorer(os.environ["CKPT"], device="cpu")
+print(f"checkpoint: {os.environ['CKPT']}")
 t0 = time.time(); out = r.restore_many(lines); dt = time.time() - t0
 print(f"CPU restore of {len(out):,} test rows: {dt:.2f}s ({1000*dt/len(out):.2f} ms/row)")
 PY
+
+# ------------------------------------------------- optional: publish to the Hub --
+# OFF by default. Runs LAST, after every checkpoint is already on disk and
+# copied into $OUT, and its failure is swallowed — a network or token problem
+# must not be able to look like a training problem, or to cost you the weights.
+#
+# It publishes the RESTORER only. `scripts/push_restorer_hf.py` refuses to
+# target the translation repos, requires HF_TOKEN_WRITE (never the read token),
+# routes each checkpoint to an Apache-2.0 or CC-BY-NC-SA-4.0 repo according to
+# the corpora that checkpoint records for ITSELF, and creates repos private.
+#
+# Enable with PUSH_HF=1, and set the Kaggle secret HF_TOKEN_WRITE. Needs
+# Internet ON, which the rest of this script does not.
+if [ "${PUSH_HF:-0}" = "1" ]; then
+  if [ -n "$PUSH_FAILED" ]; then
+    echo "=== retrying uploads that failed:$PUSH_FAILED ==="
+    for VARIANT in $PUSH_FAILED; do
+      python scripts/push_restorer_hf.py --checkpoints "$OUT" --only "$VARIANT" \
+        --repo "${HF_REPO:-Aju360/kathe-r11-restorer}" --yes 2>&1 \
+        | tee -a "$OUT/hf_push.log" \
+        || echo "  STILL FAILING: '$VARIANT' — download $OUT by hand." >&2
+    done
+  else
+    echo "  all arms published as they finished."
+  fi
+else
+  echo "  (hub upload skipped; set PUSH_HF=1 and HF_TOKEN_WRITE to enable)"
+fi
 
 echo "=== R11 done. Download ${OUT}/ before closing the session. ==="

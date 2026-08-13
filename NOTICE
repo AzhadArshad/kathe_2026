@@ -44,6 +44,32 @@ AI4Bharat, IIT Madras — https://huggingface.co/datasets/ai4bharat/BPCC
       year    = {2023}
     }
 
+Kashmiri-Language-Corpus
+Nawab Hussain — https://huggingface.co/datasets/nawabhussain/Kashmiri-Language-Corpus
+Apache License 2.0
+
+  47,344 monolingual Kashmiri sentences. Used for post-processing only: it
+  builds the diacritic-restoration lexicon (src/data/diacritize.py) and is part
+  of the training text for the R11 character-level restorer (src/restore/). No
+  TRANSLATION weight is derived from it. Apache-2.0 permits both uses with
+  attribution, which this notice provides.
+
+Kashmiri-English Parallel Corpus ("HuggingFace 30K/Kashmiri.txt")
+S. M. U. Qamar et al. — https://huggingface.co/datasets/SMUQamar/Kashmiri-English-Parallel-Corpus
+DOI 10.57967/hf/3061
+CC-BY-NC-SA-4.0 — https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+  29,999 sentences; the Kashmiri side only, used monolingually, 16,505 retained
+  after deduplication against the corpora above. Part of the training text for
+  the R11 character-level diacritic restorer (src/restore/). No TRANSLATION
+  weight is derived from it.
+
+  ShareAlike: any restorer checkpoint trained on this corpus is a derivative
+  work and must be distributed under CC-BY-NC-SA-4.0 with the NonCommercial
+  term intact — NOT under this repository's Apache-2.0 licence. The Apache-2.0
+  grant covers the source code in this repository; it does not and cannot cover
+  weights derived from NC-SA data. See MODEL_CARD.md for the full chain.
+
 FLORES-200
 Meta AI — https://huggingface.co/datasets/facebook/flores
 CC-BY-SA-4.0 — https://creativecommons.org/licenses/by-sa/4.0/

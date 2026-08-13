@@ -1,0 +1,40 @@
+{
+  "config": {
+    "model": "models/r3-200m-full",
+    "system": "r3-200m",
+    "pool_size": 32,
+    "sampling": "epsilon",
+    "epsilon_cutoff": 0.02,
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 1.0,
+    "num_beam_groups": 8,
+    "diversity_penalty": 0.5,
+    "include_beam": true,
+    "beam_size": 5,
+    "length_penalty": 1.0,
+    "max_new_tokens": 256,
+    "batch_size": 8,
+    "seed": 42,
+    "device": "auto",
+    "utility_metric": "chrf++",
+    "char_order": 6,
+    "word_order": 2,
+    "beta": 2,
+    "utility_normalize": "scorer",
+    "include_self": false
+  },
+  "stats": {
+    "sentences": 1003,
+    "wall_seconds": 16.93,
+    "seconds_per_sentence": 0.0169,
+    "mean_candidates": 32.0,
+    "mean_unique_candidates": 24.07,
+    "dropped_empty_candidates": 0,
+    "empty_pools": 0,
+    "beam_candidate_won": 585,
+    "winners_by_system": {
+      "r3-200m": 1003
+    }
+  }
+}

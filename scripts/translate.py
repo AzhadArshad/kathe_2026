@@ -25,9 +25,21 @@ Environment: this needs `transformers==4.46.1`. Newer releases drop the
 `PreTrainedTokenizerBase` re-export that IndicTransToolkit imports at package
 import time, which breaks inference and not merely training.
 
+Three decoding strategies, one entry point. Plain beam search is the default and
+is the documented live-round FALLBACK (`config/decode_beam_fallback.yaml`);
+`--mbr CONFIG` switches to MBR decoding (`src/decode/mbr.py`, R5) and
+`--rerank CONFIG` to feature-weighted reranking over the same pool
+(`src/decode/rerank.py`, R10). Keeping all three behind the same script means
+the organizers run one command whichever is chosen, and the fallback cannot fail
+for a reason the other two would not also hit.
+
 Usage:
     python scripts/translate.py --input data/dev/r0/r0.eng_Latn --output out.txt
     python scripts/translate.py --input data/raw/englishdev.csv --output sub.csv
+    python scripts/translate.py --input data/raw/englishdev.csv --output sub.csv \\
+        --mbr config/mbr_r5_200m.yaml --pool-out out/pool.jsonl
+    python scripts/translate.py --input data/raw/englishdev.csv --output sub.csv \\
+        --rerank config/rerank_r10.yaml --pool-out out/pool.jsonl
 """
 
 from __future__ import annotations
@@ -145,6 +157,65 @@ def translate(
     return [o for o in out if o is not None]
 
 
+def translate_pool(
+    sentences: list[str],
+    config: Path,
+    model_override: str,
+    device: str,
+    pool_out: Path | None,
+    mode: str,
+) -> list[str]:
+    """Pool decoding: `mode="mbr"` is R5 consensus selection, `mode="rerank"` is
+    R10 feature-weighted reranking. Both delegate entirely to their module — this
+    function is only the wiring, so the live round and the offline experiments
+    run the same selection code with the same config file.
+
+    Generation is identical in both cases (`decode.mbr.generate_pool`); only the
+    selector differs, which is why one `--pool-out` file can be re-selected
+    offline under either strategy without a re-decode.
+    """
+    from dataclasses import replace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from decode.mbr import generate_pool, write_pool
+
+    if mode == "rerank":
+        from decode.rerank import load_config, select_all
+    else:
+        from decode.mbr import load_config, select_all
+
+    cfg = load_config(config)
+    # --model is an explicit override; the config's own value wins otherwise, so
+    # a live-round operator can point at a local checkpoint directory.
+    if model_override != DEFAULT_MODEL:
+        cfg = replace(cfg, model=model_override)
+    cfg = replace(cfg, device=device)
+
+    print(f"  {len(sentences):,} sentences  model={cfg.model}  device={device}  "
+          f"{mode} pool={cfg.pool_size} sampling={cfg.sampling}", file=sys.stderr)
+
+    pools, gen_stats = generate_pool(sentences, cfg)
+    if pool_out:
+        write_pool(pool_out, sentences, pools, cfg, gen_stats)
+    # The reranker needs the sources: its length feature is output chars over
+    # SOURCE chars. MBR's utility is pool-internal and takes no sources.
+    if mode == "rerank":
+        hyps, sel_stats = select_all(pools, cfg, srcs=sentences)
+    else:
+        hyps, sel_stats = select_all(pools, cfg)
+
+    total = gen_stats["wall_seconds"] + sel_stats["wall_seconds"]
+    print(f"\n  {mode} wall-clock: generate {gen_stats['wall_seconds']:.1f}s + select "
+          f"{sel_stats['wall_seconds']:.1f}s = {total:.1f}s  "
+          f"({total / max(1, len(sentences)):.3f} s/sentence)", file=sys.stderr)
+    if sel_stats["empty_pools"]:
+        raise SystemExit(
+            f"FATAL: {sel_stats['empty_pools']} sentence(s) produced no non-empty "
+            "candidate. The official scorer rejects a submission with an empty row."
+        )
+    return hyps
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, type=Path)
@@ -156,19 +227,38 @@ def main() -> int:
     ap.add_argument("--max-new-tokens", type=int, default=256)
     ap.add_argument("--length-penalty", type=float, default=1.0)
     ap.add_argument("--limit", type=int, help="translate only the first N (smoke test)")
+    ap.add_argument("--mbr", type=Path,
+                    help="MBR config (e.g. config/mbr_r5_200m.yaml). Without it, "
+                         "plain beam search — the live-round fallback.")
+    ap.add_argument("--rerank", type=Path,
+                    help="R10 reranking config (e.g. config/rerank_r10.yaml). "
+                         "Same candidate pool as --mbr, different selector.")
+    ap.add_argument("--pool-out", type=Path,
+                    help="--mbr/--rerank only: also keep the candidate pool, so "
+                         "pool size, utility settings and reranking weights can be "
+                         "re-swept without a re-decode")
     args = ap.parse_args()
+
+    if args.mbr and args.rerank:
+        raise SystemExit("FATAL: --mbr and --rerank are two selectors over the same "
+                         "pool; pass one, not both.")
 
     sentences, ids = read_input(args.input)
     if args.limit:
         sentences, ids = sentences[: args.limit], ids[: args.limit] if ids else None
     device = pick_device(args.device)
-    print(f"  {len(sentences):,} sentences  model={args.model}  device={device}  "
-          f"beam={args.beam}", file=sys.stderr)
 
-    hyps = translate(
-        sentences, args.model, device, args.batch_size, args.beam,
-        args.max_new_tokens, args.length_penalty,
-    )
+    if args.mbr or args.rerank:
+        mode = "rerank" if args.rerank else "mbr"
+        hyps = translate_pool(sentences, args.rerank or args.mbr, args.model, device,
+                              args.pool_out, mode)
+    else:
+        print(f"  {len(sentences):,} sentences  model={args.model}  device={device}  "
+              f"beam={args.beam}", file=sys.stderr)
+        hyps = translate(
+            sentences, args.model, device, args.batch_size, args.beam,
+            args.max_new_tokens, args.length_penalty,
+        )
     assert len(hyps) == len(sentences), "row count changed — positional scoring would break"
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

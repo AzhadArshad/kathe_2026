@@ -85,17 +85,32 @@ def _normalize_refs(lines: list[str]) -> list[str]:
 # data
 # --------------------------------------------------------------------------- #
 def load_corpus(path: Path, sources: list[str] | None, max_len: int) -> list[tuple[str, list[int], str]]:
-    """Read the built corpus into (base, labels, source) examples."""
+    """Read the built corpus into (base, labels, tag) examples.
+
+    `sources` matches either the coarse source name (`bpcc`) or the fine tag
+    (`bpcc:daily`), so a provenance arm can be selected without rebuilding the
+    corpus. Selecting subcorpora matters here because BPCC is not one
+    convention: `nllb-seed` and `nllb-filtered` mark at ~2.4 restorable/100c
+    even on sentences they do mark, against 6.6-7.6 for `daily` and
+    `bpcc-seed-v1` (experiments/r11-restore/results.md).
+    """
+    want = set(sources or ())
     out = []
+    unknown = set()
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             row = json.loads(line)
-            if sources and row["source"] not in sources:
+            tag = row.get("tag", row["source"])
+            if want and not (tag in want or row["source"] in want):
+                unknown.add(tag)
                 continue
             for piece, _sep in chunk(row["text"], max_len):
                 base, labels = encode(piece)
                 if base:
-                    out.append((base, labels, row["source"]))
+                    out.append((base, labels, tag))
+    if want and not out:
+        raise SystemExit(
+            f"--sources {sorted(want)} matched nothing. Available: {sorted(unknown)}")
     return out
 
 
@@ -196,6 +211,70 @@ def score_texts(gold_texts: list[str], restored: list[str]) -> dict:
     return out
 
 
+def split_by_lexicon(gold_texts: list[str], restored: list[str],
+                     lexicon_path: Path) -> dict:
+    """Per-mark P/R split by whether the LEXICON already knows the word.
+
+    This is the metric R11 turns on, and it exists as code rather than as a
+    number in a markdown file because the last time a decisive statistic was
+    computed inline it cost an hour to re-derive (PLANNING.md 2026-08-12, the
+    Urdu-marker detector).
+
+    Why it decides things: a learned restorer only earns its place by being
+    right where the lexicon is silent. Measured 2026-08-13, the 6-epoch model
+    scored 84.0% precision on words the lexicon knows and **34.7% on the tail**,
+    falling to 15.7% as `none_bias` bought recall — accurate exactly where it
+    was redundant. Overall micro-F1 hides that completely, because known words
+    carry 56.8% of the marks.
+
+    Reads only `json` — no KashmiriNormalizer, no sacrebleu — so it runs inside
+    the training job on a bare Kaggle image.
+    """
+    from data.diacritize import _tables, lookup
+
+    blob = json.loads(Path(lexicon_path).read_text(encoding="utf-8"))
+    lut, tables = blob["lexicon"], _tables(blob.get("context") or {})
+
+    acc = {"known": {"pred": Counter(), "gold": Counter(), "hit": Counter()},
+           "tail": {"pred": Counter(), "gold": Counter(), "hit": Counter()}}
+    skipped = 0
+    for g, h in zip(gold_texts, restored):
+        gw, hw = g.split(), h.split()
+        if len(gw) != len(hw):
+            skipped += 1  # cannot align; counted and reported, never silent
+            continue
+        bases = [strip_key(w) for w in gw]
+        for i, (a, b) in enumerate(zip(gw, hw)):
+            side = "known" if lookup(bases, i, lut, tables) is not None else "tail"
+            _, la = encode(a)
+            _, lb = encode(b)
+            if len(la) != len(lb):
+                continue
+            for x, y in zip(la, lb):
+                if x:
+                    acc[side]["gold"][x] += 1
+                if y:
+                    acc[side]["pred"][y] += 1
+                if x and x == y:
+                    acc[side]["hit"][x] += 1
+    out = {k: per_mark_prf(v["pred"], v["gold"], v["hit"]) for k, v in acc.items()}
+    out["unalignable_lines"] = skipped
+    out["lexicon"] = str(lexicon_path)
+    return out
+
+
+def print_split(rows: dict) -> None:
+    k, t = rows["known"]["MICRO"], rows["tail"]["MICRO"]
+    print(f"    {'':22}{'gold':>8}{'pred':>8}{'P%':>8}{'R%':>8}{'F1':>8}")
+    for label, r in (("lexicon KNOWS word", k), ("TAIL (unknown word)", t)):
+        print(f"    {label:22}{r['gold']:>8,}{r['predicted']:>8,}"
+              f"{r['precision']:>8.1f}{r['recall']:>8.1f}{r['f1']:>8.1f}")
+    print(f"    -> TAIL PRECISION {t['precision']:.1f}%  "
+          f"(retrain clears the bar at ~50%; 6-epoch baseline was 34.7%)")
+    if rows["unalignable_lines"]:
+        print(f"    ({rows['unalignable_lines']} lines skipped: word count differed)")
+
+
 def print_prf(title: str, rows: dict) -> None:
     print(f"\n  {title}")
     print(f"    {'mark':10} {'gold':>8} {'pred':>8} {'ok':>8} {'P%':>7} {'R%':>7} {'F1':>7}")
@@ -275,6 +354,7 @@ def fit(args: argparse.Namespace) -> int:
 
     history = []
     best = -1.0
+    best_epoch = 0
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -301,23 +381,44 @@ def fit(args: argparse.Namespace) -> int:
               f"R {dev_prf['MICRO']['recall']:.2f} F1 {f1:.2f}  "
               f"({time.time() - t0:.0f}s)")
         history.append({"epoch": epoch, "dev_loss": dev_loss, "dev_prf": dev_prf})
+        meta = {
+            "epoch": epoch, "dev_loss": dev_loss, "dev_prf": dev_prf,
+            "sources": dict(by_source), "corpus": str(args.corpus),
+            "train_examples": len(train), "heldout_examples": len(dev),
+            "args": {k: (str(v) if isinstance(v, Path) else v)
+                     for k, v in vars(args).items() if k != "func"},
+            "history": history, "wall_seconds": round(time.time() - t0, 1),
+        }
         if f1 >= best:
-            best = f1
-            save_checkpoint(args.out, model, vocab, {
-                "epoch": epoch, "dev_loss": dev_loss, "dev_prf": dev_prf,
-                "sources": dict(by_source), "corpus": str(args.corpus),
-                "train_examples": len(train), "heldout_examples": len(dev),
-                "args": {k: (str(v) if isinstance(v, Path) else v)
-                         for k, v in vars(args).items() if k != "func"},
-                "history": history, "wall_seconds": round(time.time() - t0, 1),
-            })
+            best, best_epoch = f1, epoch
+            save_checkpoint(args.out, model, vocab, meta)
             print(f"     saved {args.out} (best micro-F1 {best:.2f})")
+        # The LAST epoch is kept as well, unconditionally. Selection here is by
+        # micro-F1, which is dominated by frequent word forms — and the metric
+        # this experiment turns on is TAIL precision, on words the lexicon does
+        # not know. Those need not peak at the same epoch, and 13 MB is a cheap
+        # way to keep that question answerable without a second 50-minute run.
+        if epoch == args.epochs and best_epoch != epoch:
+            last_path = args.out.with_name(args.out.stem + "_last.pt")
+            save_checkpoint(last_path, model, vocab, meta)
+            print(f"     saved {last_path} (final epoch; best was {best_epoch})")
 
-    print_prf("held-out (training-text slice), best checkpoint", history[-1]["dev_prf"])
+    # Report the checkpoint that was actually WRITTEN, not the last epoch. These
+    # coincided at 6 epochs because micro-F1 rose monotonically; over 20 they
+    # need not, and labelling the last epoch "best" would describe a file that
+    # does not exist on disk.
+    best_prf = next(h["dev_prf"] for h in history if h["epoch"] == best_epoch)
+    print_prf(f"held-out (training-text slice), SAVED checkpoint = epoch {best_epoch} "
+              f"of {args.epochs}", best_prf)
+    if best_epoch != args.epochs:
+        print(f"    note: final epoch {args.epochs} scored "
+              f"{history[-1]['dev_prf']['MICRO']['f1']:.2f} micro-F1 vs {best:.2f}; "
+              f"both checkpoints kept.")
     print(f"\n  total {time.time() - t0:.0f}s")
 
     if args.refs:
-        evaluate_refs(args.out, args.refs, args.device, args.none_bias_sweep)
+        evaluate_refs(args.out, args.refs, args.device, args.none_bias_sweep,
+                      args.lexicon)
     return 0
 
 
@@ -325,7 +426,8 @@ def fit(args: argparse.Namespace) -> int:
 # evaluate on real references
 # --------------------------------------------------------------------------- #
 def evaluate_refs(checkpoint: Path, refs: Path, device: str,
-                  bias_sweep: list[float] | None = None) -> dict:
+                  bias_sweep: list[float] | None = None,
+                  lexicon: Path | None = None) -> dict:
     """Strip R0's references, restore them, and compare. The honest test."""
     with open(refs, encoding="utf-8") as fh:
         gold = _normalize_refs([ln.rstrip("\n") for ln in fh])
@@ -355,8 +457,21 @@ def evaluate_refs(checkpoint: Path, refs: Path, device: str,
         print(f"    restorable density {d['restored_per_100c']}/100c "
               f"vs references {d['reference_per_100c']}/100c   "
               f"[{rows['WALL']['seconds']}s for {len(out):,} lines]")
+        if lexicon:
+            rows["BY_LEXICON"] = split_by_lexicon(gold, out, lexicon)
+            print_split(rows["BY_LEXICON"])
         results[f"bias_{bias}"] = rows
     return results
+
+
+def _eval_cmd(a: argparse.Namespace) -> int:
+    res = evaluate_refs(a.checkpoint, a.refs, a.device, a.none_bias_sweep, a.lexicon)
+    if a.json_out:
+        a.json_out.parent.mkdir(parents=True, exist_ok=True)
+        a.json_out.write_text(json.dumps(res, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+        print(f"  wrote {a.json_out}")
+    return 0
 
 
 def main() -> int:
@@ -386,6 +501,11 @@ def main() -> int:
     f.add_argument("--log-every", type=int, default=200)
     f.add_argument("--none-bias-sweep", type=float, nargs="*",
                    default=[0.0, -0.5, -1.0, -1.5])
+    f.add_argument("--lexicon", type=Path,
+                   help="restoration lexicon JSON. Enables the TAIL PRECISION "
+                        "split — per-mark precision on words the lexicon does "
+                        "NOT know, which is the number this experiment turns "
+                        "on. Reads json only; no scorer dependency.")
     f.set_defaults(func=fit)
 
     e = sub.add_parser("eval")
@@ -393,12 +513,9 @@ def main() -> int:
     e.add_argument("--refs", required=True, type=Path)
     e.add_argument("--device", default="cpu")
     e.add_argument("--none-bias-sweep", type=float, nargs="*", default=[0.0])
+    e.add_argument("--lexicon", type=Path, help="enables the TAIL PRECISION split")
     e.add_argument("--json-out", type=Path)
-    e.set_defaults(func=lambda a: (
-        (a.json_out.write_text(json.dumps(
-            evaluate_refs(a.checkpoint, a.refs, a.device, a.none_bias_sweep),
-            ensure_ascii=False, indent=2), encoding="utf-8") if a.json_out
-         else evaluate_refs(a.checkpoint, a.refs, a.device, a.none_bias_sweep)), 0)[1])
+    e.set_defaults(func=_eval_cmd)
 
     args = ap.parse_args()
     return args.func(args)

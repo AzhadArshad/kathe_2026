@@ -1,0 +1,22 @@
+# Post-processing for R3 + TWO-SIDED context diacritic restoration (submission 005).
+
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false   # measured OFF on R0 (28.64 vs 28.62)
+strip_zwj: false
+collapse_whitespace: false
+
+# Same lexicon file as submission 004, rebuilt with three context tables
+# consulted most-specific-first: both-sided -> left -> right -> unigram.
+# Swept on R0 (2026-08-12), all against the same R3 decode:
+#
+#   no restoration                28.64
+#   unigram only                  31.20
+#   + left   (sub 004)            32.58   -> leaderboard 11.70
+#   + right only                  32.88   <- right beats left alone
+#   + left + right                32.90
+#   + both-sided  (sub 005)       33.50
+#
+# context_min_count=3 for all three tables; the optimum is flat (33.46-33.50
+# across mc_both 2-4 x mc_LR 2-4), so this is not a knife-edge fit.
+diacritic_lexicon: data/processed/diacritic_lexicon.json

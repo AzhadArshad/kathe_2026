@@ -62,26 +62,51 @@ def _arabic_share(text: str) -> float:
     return arabic / len(letters)
 
 
-def load_source(path: Path, min_chars: int, min_arabic: float,
-                min_restorable: int) -> tuple[list[str], Counter]:
-    """Read, scorer-normalize, and drop what cannot teach anything."""
-    kept: list[str] = []
-    stats: Counter = Counter()
+def _read_lines(path: Path) -> list[tuple[str, str | None]]:
+    """Yield (raw target text, sub-tag). A `.jsonl` input is read as extraction
+    output and tagged by its `config` field, so BPCC arrives as six separately
+    addressable subcorpora rather than one blob.
+
+    That distinction is not cosmetic. `nllb-seed` and `nllb-filtered` mark at
+    ~2.4 restorable/100c even on the sentences they DO mark, against 6.6-7.6 for
+    `daily`, `bpcc-seed-v1` and the external corpus — three different
+    conventions inside one "source". On a task where the label IS the
+    convention, being able to select among them is the experiment.
+    """
+    if path.suffix == ".jsonl":
+        out = []
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                row = json.loads(line)
+                out.append((row["tgt"], row.get("config")))
+        return out
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            stats["read"] += 1
-            text = normalize(line.rstrip("\n"), SCORER_ONLY)
-            if len(text) < min_chars:
-                stats["drop_short"] += 1
-                continue
-            if _arabic_share(text) < min_arabic:
-                stats["drop_script"] += 1  # Latin/Devanagari leakage
-                continue
-            if sum(1 for c in text if c in RESTORABLE) < min_restorable:
-                stats["drop_undiacritized"] += 1
-                continue
-            kept.append(text)
-            stats["kept"] += 1
+        return [(ln.rstrip("\n"), None) for ln in fh]
+
+
+def load_source(path: Path, min_chars: int, min_arabic: float,
+                min_restorable: int) -> tuple[list[tuple[str, str]], Counter]:
+    """Read, scorer-normalize, and drop what cannot teach anything.
+
+    Returns (text, sub-tag) pairs; the sub-tag is the plain source name for a
+    text file and `name:config` for a `.jsonl`.
+    """
+    kept: list[tuple[str, str | None]] = []
+    stats: Counter = Counter()
+    for raw, sub in _read_lines(path):
+        stats["read"] += 1
+        text = normalize(raw, SCORER_ONLY)
+        if len(text) < min_chars:
+            stats["drop_short"] += 1
+            continue
+        if _arabic_share(text) < min_arabic:
+            stats["drop_script"] += 1  # Latin/Devanagari leakage
+            continue
+        if sum(1 for c in text if c in RESTORABLE) < min_restorable:
+            stats["drop_undiacritized"] += 1
+            continue
+        kept.append((text, sub))
+        stats["kept"] += 1
     return kept, stats
 
 
@@ -141,7 +166,8 @@ def main() -> int:
                                    args.min_restorable)
         leaked = dup = 0
         kept: list[str] = []
-        for text in lines:
+        by_sub: dict[str, list[str]] = {}
+        for text, sub in lines:
             key = strip_key(text)
             if key in excluded:
                 leaked += 1
@@ -151,11 +177,14 @@ def main() -> int:
                 continue
             seen.add(key)
             kept.append(text)
-            rows.append({"text": text, "source": name})
+            tag = f"{name}:{sub}" if sub else name
+            by_sub.setdefault(tag, []).append(text)
+            rows.append({"text": text, "source": name, "tag": tag})
         per_source[name] = {
             "path": str(path), **dict(stats),
             "dropped_dev_leak": leaked, "dropped_duplicate": dup,
             **profile(kept),
+            "subcorpora": {t: profile(v) for t, v in sorted(by_sub.items())},
         }
         s = per_source[name]
         print(f"  {name:10} read {s['read']:>7,} -> kept {s['lines']:>7,}  "
@@ -163,6 +192,9 @@ def main() -> int:
               f"undiacritized {s.get('drop_undiacritized', 0):,}, "
               f"dup {dup:,}, DEV-LEAK {leaked:,})  "
               f"{s['restorable_per_100c']}/100c")
+        if len(by_sub) > 1:
+            for t, p in sorted(s["subcorpora"].items(), key=lambda kv: -kv[1]["lines"]):
+                print(f"      {t:28} {p['lines']:>7,} lines  {p['restorable_per_100c']:>5.2f}/100c")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as fh:

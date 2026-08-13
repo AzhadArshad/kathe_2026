@@ -1,0 +1,12 @@
+{
+  "name": "R0 \u2014 MBR-32 single system + diacritics",
+  "lines": 1003,
+  "bleu": 21.51543649076494,
+  "chrf_plus_plus": 49.613088518447704,
+  "geometric_mean": 32.671811323055856,
+  "hyp_chars_per_line": 40.3,
+  "ref_chars_per_line": 40.45,
+  "hyp_ref_char_ratio": 0.9963,
+  "hyp_file": "/private/tmp/the assistant-501/-Users-azhadarshad-Desktop-A-P-P-M-D-W-kathe-2026/889275ad-dcce-4df1-b856-3c5ea33a121e/scratchpad/r0.hyp.mbr200m.diac",
+  "ref_file": "data/dev/r0/r0.kas_Arab"
+}

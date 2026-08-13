@@ -1,0 +1,73 @@
+# R5 — MBR decoding, single system: the R3 200M full fine-tune.
+#
+# This is the last untried technical lever (PLANNING.md §Experiment ladder), and
+# the one place R0 should rank honestly. Every gain since submission 003 came
+# from a lookup table built on BPCC, and R0 is cut from BPCC — which is how
+# submission 005 scored 33.50 on R0 and REGRESSED to 11.08 on the leaderboard.
+# MBR consults no external table: it only compares the model's own outputs to
+# each other, so there is no BPCC provenance for R0 to reward.
+#
+# ORDER: MBR selection first, diacritic restoration second. Restoration is a
+# fixed transform applied identically to every candidate, so running it first
+# would compress exactly the differences the utility is measuring. Restoration
+# stays in post-processing (config/postproc_r3_both.yaml), unchanged from sub 007.
+#
+#   python -m decode.mbr generate --config config/mbr_r5_200m.yaml \
+#       --input data/dev/r0/r0.eng_Latn --output data/dev/r0/pool.200m.jsonl
+#   python -m decode.mbr select   --config config/mbr_r5_200m.yaml \
+#       --candidates data/dev/r0/pool.200m.jsonl --output data/dev/r0/r0.hyp.mbr
+
+model: models/r3-200m-full
+system: r3-200m
+
+# --- candidate pool ----------------------------------------------------------
+# 32 is the pool size the MBR literature converges on: the estimator's variance
+# falls roughly as 1/sqrt(n) and is close to flat past ~30 for short sentences.
+# 1,730 test sentences makes it affordable either way. Sweepable offline with
+# `select --pool-size N` against one generated file — no re-decode needed.
+pool_size: 32
+
+# Epsilon sampling, not ancestral. IndicTrans2's target vocabulary is 122,672
+# tokens, so the untruncated tail is long enough that ancestral sampling draws
+# degenerate candidates that pollute the consensus. A probability floor removes
+# them without the distribution distortion a hard top-k imposes.
+# Fallback if a transformers build lacks epsilon_cutoff: sampling: diverse_beam.
+sampling: epsilon
+epsilon_cutoff: 0.02
+temperature: 1.0
+
+# diverse_beam only — ignored while sampling is `epsilon`.
+num_beam_groups: 8
+diversity_penalty: 0.5
+
+# The beam-5 hypothesis joins the pool as candidate 0, so MBR has a floor: if
+# the samples are uniformly poor it can still return what beam would have given,
+# judged by the same utility as everything else. `beam_candidate_won` in the
+# selection stats reports how often that happens — a high number means the
+# sampling temperature is too loose.
+include_beam: true
+beam_size: 5
+length_penalty: 1.0
+
+max_new_tokens: 256
+batch_size: 8 # sequences in flight = batch_size * pool_size
+seed: 42
+device: auto
+
+# --- utility -----------------------------------------------------------------
+# chrF++ at word_order 2 — the official scorer's exact setting (PROJECT_NOTES.md §3).
+# Computed with sacreBLEU's own CHRF internals, not a reimplementation.
+utility_metric: chrf++
+char_order: 6
+word_order: 2
+beta: 2
+
+# Score candidates on scorer-normalized text, because that is what the metric
+# sees. The RAW candidate at the winning index is what gets written out, so the
+# downstream make_submission pipeline is byte-identical to sub 007's.
+utility_normalize: scorer
+
+# "mean chrF++ against all OTHER candidates" — the diagonal is excluded.
+# Duplicates still count: a string sampled 5 times contributes 4 self-matches at
+# 100 toward its own score. That is the consensus signal, not double-counting.
+include_self: false

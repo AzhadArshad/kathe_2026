@@ -1,0 +1,51 @@
+# R5 — CROSS-SYSTEM MBR: one pool holding both the R3 200M fine-tune's
+# candidates and the 1B zero-shot's, selected together.
+#
+# This config drives SELECTION ONLY. The two pools are generated separately by
+# config/mbr_r5_200m.yaml and config/mbr_r5_1b.yaml, then merged by row index:
+#
+#   python -m decode.mbr select --config config/mbr_r5_cross.yaml \
+#       --candidates data/dev/r0/pool.200m.jsonl data/dev/r0/pool.1b.jsonl \
+#       --output data/dev/r0/r0.hyp.mbr-cross \
+#       --stats  experiments/r5-mbr/select_cross.json
+#
+# Merging is BY ROW INDEX with the sources asserted equal across files, because
+# scoring is positional (PROJECT_NOTES.md §3): two pool files silently offset by one
+# row would look correct and score near zero.
+#
+# Read `winners_by_system` in the selection stats. If it is lopsided toward one
+# system, the cross-system pool is not buying consensus — it is just letting the
+# stronger model outvote the weaker one, and the single-system run is the
+# cheaper equivalent. A genuine cross-system win shows a mixed split AND a score
+# above both single-system runs.
+#
+# The `model` field is unused here (selection loads no model) but is kept
+# populated so the file is self-describing; generation ignores this file.
+
+model: models/r3-200m-full
+system: cross-200m+1b
+
+# 64 in the merged pool: 32 from each system. `pool_size` is not enforced at
+# selection time — the merged file decides — but it is recorded so the config
+# describes what was actually run.
+pool_size: 64
+
+sampling: epsilon
+epsilon_cutoff: 0.02
+temperature: 1.0
+num_beam_groups: 8
+diversity_penalty: 0.5
+include_beam: true
+beam_size: 5
+length_penalty: 1.0
+max_new_tokens: 256
+batch_size: 8
+seed: 42
+device: auto
+
+utility_metric: chrf++
+char_order: 6
+word_order: 2
+beta: 2
+utility_normalize: scorer
+include_self: false
