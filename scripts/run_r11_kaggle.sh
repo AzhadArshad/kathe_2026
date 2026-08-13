@@ -59,6 +59,33 @@ DEVICE="${DEVICE:-cuda}"
 EPOCHS="${EPOCHS:-6}"
 BATCH="${BATCH:-64}"
 
+# Locate the bundle by its CONTENTS, not by one hard-coded mount point. Kaggle
+# mounts a dataset at /kaggle/input/<slug>, but the path picks up an owner
+# prefix in some views and moves again if the dataset is copied by hand — both
+# of which happened on the first real run. Searching for the one file that must
+# be there is cheap and cannot be wrong.
+if [ ! -f "$BUNDLE/restore_text.jsonl" ]; then
+  # Search beside REPO first — copying the code and the data together is the
+  # normal thing to do and is what happened on the first real run.
+  FOUND="$(find "$REPO" "$(dirname "$REPO")" /kaggle/input /kaggle/working \
+             -maxdepth 5 -name restore_text.jsonl -print -quit 2>/dev/null || true)"
+  if [ -n "$FOUND" ]; then
+    BUNDLE="$(dirname "$FOUND")"
+    echo "  bundle not at the default path; found it at $BUNDLE"
+  else
+    echo "FATAL: no restore_text.jsonl found. Attach the kathe-r11-text" >&2
+    echo "       dataset, or set BUNDLE=<path containing restore_text.jsonl>." >&2
+    exit 1
+  fi
+fi
+
+# Likewise the code may be at $REPO/src or one level down at $REPO/code/src,
+# depending on whether the bundle's code/ folder was copied or its contents.
+if [ ! -d "$REPO/src" ] && [ -d "$REPO/code/src" ]; then
+  REPO="$REPO/code"
+  echo "  code is one level down; using REPO=$REPO"
+fi
+
 # The repo is PRIVATE, so the bundle ships a copy of src/ and scripts/ as well
 # and no GitHub token is needed. If REPO is already a clone this is a no-op; if
 # it is not, materialise it from the bundle. Either way the code has to end up
