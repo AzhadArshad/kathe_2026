@@ -159,11 +159,18 @@ def main() -> int:
                     help="print the plan, including licence routing, and stop")
     args = ap.parse_args()
 
-    pattern = f"r11_{args.only}*.pt" if args.only else "r11_*.pt"
+    # `r11*_...` and not `r11_...`: the longer-trained rerun of each arm is named
+    # r11b_clean.pt / r11b_dense.pt, and r11b_dense IS THE SHIPPED RESTORER
+    # (leaderboard 13.81). A `r11_*.pt` glob silently skips every r11b file, so
+    # the one checkpoint that must be published would never have been uploaded
+    # and the run would have exited "nothing to publish" looking successful.
+    pattern = f"r11*_{args.only}*.pt" if args.only else "r11*_*.pt"
     ckpts = sorted(args.checkpoints.glob(pattern))
     if not ckpts:
         print(f"  no {pattern} under {args.checkpoints} — nothing to publish")
         return 0
+    print(f"  {len(ckpts)} checkpoint(s) match {pattern}: "
+          + ", ".join(c.name for c in ckpts))
 
     owner = args.repo.split("/")[0] if "/" in args.repo else ""
     plan = []

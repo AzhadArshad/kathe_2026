@@ -1,18 +1,28 @@
 # Model Card — KATHE 2026 English → Kashmiri
 
-**Status: STUB.** The licence chain and the dataset disclosure below are
-complete and current as of 2026-08-10. Everything describing a *trained model*
-is a placeholder: no fine-tune has been run yet. Sections marked `TBD` must be
-filled before weights are published (due 2026-08-17).
+**Status: current as of 2026-08-14.** Describes the system that scores **13.81**
+on the competition leaderboard.
 
 - **Task:** English (`eng_Latn`) → Kashmiri, Perso-Arabic script (`kas_Arab`)
 - **Competition:** KATHE 2026, Gaash Lab / NIT Srinagar + Bureau of Indian Standards
 - **Author:** Azhad Arshad (solo entry, team *Noore*)
 - **Repository:** `<TBD — public URL, due 2026-08-16>`
-- **Weights:** `Aju360/kathe-r3-200m-full` (R3, 200M full fine-tune) — **private,
-  must be public by 2026-08-17.** HF account is `Aju360`; GitHub is
-  `AzhadArshad`. The two differ, so do not infer one from the other in any
-  published URL.
+
+**The system is two models, and both are required.** Shipping only the
+translation model gives 10.00 instead of 13.81 (§4):
+
+| Component | Weights | Licence | Status |
+| --- | --- | --- | --- |
+| Translation — 200M full fine-tune | `Aju360/kathe-r12-200m-selected` | Apache-2.0 (MIT notice retained) | **private, must be public by 2026-08-17** |
+| Diacritic restorer — 3.3M char tagger | `r11b_dense.pt` → `Aju360/kathe-diacritic-restorer` | Apache-2.0 (see §2) | **not yet published** |
+
+Run both with one command: `scripts/generate_translations.py`.
+
+HF account is `Aju360`; GitHub is `AzhadArshad`. The two differ — do not infer
+one from the other in any published URL.
+
+**Open-sourcing code and weights by the deadline is an eligibility condition**
+for every participant, not only for winners.
 
 ---
 
@@ -24,7 +34,8 @@ below. Both constrain what may be claimed over the released artifact.
 | Artifact | Licence | Why |
 | --- | --- | --- |
 | This repository's **code** | Apache-2.0 | Original work. See `LICENSE`. |
-| **Released weights** | Apache-2.0, with the MIT notice retained | Derived from IndicTrans2, which is MIT; MIT permits redistribution under Apache-2.0 provided attribution is preserved. |
+| **Translation weights** | Apache-2.0, with the MIT notice retained | Derived from IndicTrans2, which is MIT; MIT permits redistribution under Apache-2.0 provided attribution is preserved. |
+| **Diacritic restorer weights** (`r11b_dense`) | Apache-2.0 | Trained from scratch — no base model. Its training text is BPCC (CC-BY-4.0, attributed) and `nawabhussain/Kashmiri-Language-Corpus` (Apache-2.0). It contains **no** CC-BY-NC-SA material; other checkpoints from the same sweep do. See §2. |
 | Training data — BPCC human seed | CC-BY-4.0 | **Attribution required.** Discharged by `NOTICE` and §2 below. |
 | Training data — BPCC NLLB subsets | CC0 1.0 | Public domain dedication; no obligations. |
 | Dev data — FLORES-200 | CC-BY-SA-4.0 | Evaluation only, never trained on, never redistributed. ShareAlike does not attach to the weights. |
@@ -60,25 +71,37 @@ count. A dataset absent from this table is a dataset not used.
 
 ### In the training mix
 
-| Corpus | Source | Licence | Pairs used | Added |
-| --- | --- | --- | ---: | --- |
-| BPCC — `bpcc-seed-v2` | `ai4bharat/BPCC` | CC-BY-4.0 | 77,044 | 2026-08-07 |
-| BPCC — `bpcc-seed-v1` | `ai4bharat/BPCC` | CC-BY-4.0 | 15,503 | 2026-08-07 |
-| BPCC — `bpcc-seed-latest` | `ai4bharat/BPCC` | CC-BY-4.0 | 10,592 | 2026-08-07 |
-| BPCC — `daily` | `ai4bharat/BPCC` | CC-BY-4.0 | 4,279 | 2026-08-07 |
-| BPCC — `nllb_seed` | `ai4bharat/BPCC` | CC0 1.0 | 6,081 | 2026-08-07 |
-| BPCC — `nllb_filtered` (web-mined) | `ai4bharat/BPCC` | CC0 1.0 | 12,083 | 2026-08-07 |
-| **Total after filtering** | | | **125,582** | |
+Every pair reaching the shipped translation model comes from BPCC. No other
+parallel corpus is used, and no third-party translation API is used anywhere in
+this project.
 
-Counts are post-filter pair counts entering the corpus build (extraction and
-filter stages are documented in `PLANNING.md` §"Data pipeline"). Of these,
-113,499 (90.4%) are human-translated. 2,000 pairs are then held out as dev sets
-(§4), leaving **123,538** for training.
+**Shipped model (R12-selected).** Candidate pool, before dev exclusion:
+
+| Corpus | Source | Licence | Pairs |
+| --- | --- | --- | ---: |
+| BPCC — `bpcc-seed-v2` | `ai4bharat/BPCC` | CC-BY-4.0 | 76,981 |
+| BPCC — `bpcc-seed-v1` | `ai4bharat/BPCC` | CC-BY-4.0 | 15,504 |
+| BPCC — `bpcc-seed-latest` | `ai4bharat/BPCC` | CC-BY-4.0 | 10,582 |
+| BPCC — `nllb-seed` | `ai4bharat/BPCC` | CC0 1.0 | 6,065 |
+| BPCC — `daily` | `ai4bharat/BPCC` | CC-BY-4.0 | 4,276 |
+| **Pool total** | | | **113,408** |
+
+Human-translated only; the web-mined `nllb_filtered` subset is excluded, as is
+any LaBSE-based quality filter — dropping both *improved* the leaderboard score
+(§4). Deduplicated on `(source, diacritic-stripped target)`. R0, the eval slice
+and a 3,000-pair training dev set are then removed, leaving **111,400**; the
+20,000 nearest the dev distribution are repeated ×3 for a **148,400**-pair
+training file (§5.1).
+
+**Earlier model (R3),** which produced submissions 002–010 and remains the
+baseline several results are quoted against: the same BPCC subsets plus
+`nllb_filtered` (12,083, CC0), 125,582 pairs after filtering, 123,538 after
+holding out 2,000 for dev.
 
 `wiki/kas_Arab.tsv` is byte-identical to `bpcc-seed-v1` and is skipped
 structurally rather than counted twice.
 
-### Used for post-processing only (no weights derived)
+### Post-processing and the diacritic restorer (not in the translation mix)
 
 | Corpus | Source | Licence | Size | Role |
 | --- | --- | --- | ---: | --- |
@@ -86,17 +109,34 @@ structurally rather than counted twice.
 | Kashmiri-English Parallel Corpus, `HuggingFace 30K/Kashmiri.txt` | `SMUQamar/Kashmiri-English-Parallel-Corpus` (Qumar et al., DOI 10.57967/hf/3061) | **CC-BY-NC-SA-4.0** | 29,999 sentences, 16,505 after dedup | Kashmiri side only, monolingual. R11 restorer training text. Access is granted **manually** by the owners. |
 
 Disclosed under the organizers' 2026-08-07 ruling. These are listed separately
-from the translation training mix because they never reach the translation
-model — they inform post-processing applied after decoding.
+from the translation training mix because they never reach the *translation*
+model. They are not weight-free, however: the character-level diacritic restorer
+(§5.2) is trained on this text, so the heading below is about which model, not
+about whether weights exist.
 
-**Licence chain for the R11 restorer.** The SMUQamar corpus is
-CC-BY-NC-SA-4.0, so any restorer checkpoint trained on it is a derivative work
-under ShareAlike and **must be published CC-BY-NC-SA-4.0, not Apache-2.0**, with
-attribution and the NonCommercial term intact. This does not touch the
-translation weights (`Aju360/kathe-r3-200m-full`), which derive from BPCC and
-IndicTrans2 only. Per PROJECT_NOTES.md §2.7, do not claim Apache-2.0 over something
-that cannot be relicensed. As of 2026-08-13 no R11 checkpoint has been
-published; if one is, this paragraph is the licence statement that goes with it.
+**Licence chain for the restorer — depends on the checkpoint, so check before
+publishing.** The SMUQamar corpus is CC-BY-NC-SA-4.0. Any restorer trained on it
+is a derivative work under ShareAlike and **must be published CC-BY-NC-SA-4.0,
+not Apache-2.0**, with attribution and the NonCommercial term intact. Per
+PROJECT_NOTES.md §2.7, do not claim Apache-2.0 over something that cannot be
+relicensed.
+
+The R11 sweep produced checkpoints on both sides of that line, because the arms
+differ in which sources they read:
+
+| Checkpoint | Training sources | Contains SMUQamar? | Publishable as |
+| --- | --- | --- | --- |
+| **`r11b_dense` — SHIPPED** | `bpcc:daily` (3,059) + `bpcc:bpcc-seed-v1` (15,460) + external/nawabhussain (39,948) = 58,467 lines | **No** | **Apache-2.0** |
+| `r11b_clean` | above + `bpcc-seed-v2`, `bpcc-seed-latest` | No | Apache-2.0 |
+| `r11_all`, `r11_bpcc` | all eight source tags | **Yes** | CC-BY-NC-SA-4.0 |
+
+**The shipped restorer is `r11b_dense`, and it is clean.** Its inputs are BPCC
+(CC-BY-4.0, attributed in `NOTICE`) and `nawabhussain/Kashmiri-Language-Corpus`
+(Apache-2.0). It therefore carries no NonCommercial restriction and is released
+under Apache-2.0 alongside the rest of this repository.
+
+Translation weights are unaffected either way: they derive from BPCC and
+IndicTrans2 (MIT) only.
 
 **Dev-set contamination, disclosed.** 419 of the 1,003 sentences in the
 project's R0 development set (and 410 of the 997-line evaluation slice) appear
@@ -177,33 +217,128 @@ distribution of the real test input over the same range. FLORES was demoted
 after the test set was measured at 7.3 words per sentence against FLORES's 21.6
 — tuning on FLORES optimizes a different task.
 
-**Results.** `TBD` — no fine-tuned checkpoint exists yet. The zero-shot
-IndicTrans2-1B baseline scores 15.83 on FLORES devtest and 8.00 on the
-competition leaderboard.
+**A caution about R0.** R0 has been measured as *anti-predictive* of the
+leaderboard across seven post-processing submissions (Spearman ρ = −0.39). It is
+cut from BPCC, which IndicTrans2 was trained on, so every IT2-derived system is
+partly scored on its own training data, and its `daily`-weighted sampling gives
+it a diacritic profile the real test set does not share. Numbers below are
+leaderboard readings wherever one exists. Do not infer a leaderboard position
+from an R0 score.
+
+**Leaderboard results** (geometric mean of BLEU and chrF++, held-out test set):
+
+| System | Score |
+| --- | ---: |
+| IndicTrans2-1B zero-shot | 8.00 |
+| R3 — 200M full fine-tune, raw | 8.83 |
+| R12-selected — 200M, semantically selected corpus, raw | 10.00 |
+| R3 + diacritic lexicon | 11.81 |
+| R12-selected + diacritic lexicon | 13.52 |
+| **R12-selected + learned diacritic restorer** | **13.81** |
+
+Two levers account for the gap from 8.83, and they are unequal:
+
+- **Diacritic restoration: +3.81.** The single largest contribution.
+- **Training-mix selection: +1.17.** Rebuilding the corpus from raw BPCC and
+  upweighting pairs semantically near the dev distribution.
 
 ---
 
 ## 5. Training
 
-`TBD`. Planned: full fine-tune of the 200M distilled checkpoint for iteration,
-LoRA on the 1B for the final run, in two stages (mined data, then a short
-finishing pass on human data). Targets are normalized with `KashmiriNormalizer`
-before training. Hyperparameters live in `config/`, not in code.
+### 5.1 Translation model
 
-To be recorded here once run: base checkpoint, hardware, wall-clock, epochs,
-learning rate, batch size, and the exact corpus hash from
-`data/processed/r3_corpus/manifest.json`.
+Full fine-tune (no LoRA) of `ai4bharat/indictrans2-en-indic-dist-200M`.
+
+| | |
+| --- | --- |
+| Corpus | 148,400 pairs — 111,400-pair raw-BPCC pool, human-translated only, with the nearest 20,000 to the dev distribution repeated ×3 (40.4% of the mix) |
+| Held out | R0 (1,003) and the in-training eval slice (997), removed by exact pair key with an asserted count; plus a 3,000-pair dev set with verified zero train∩dev overlap |
+| Epochs | 6 |
+| Learning rate | 5e-5, inverse-sqrt schedule, 500 warmup steps |
+| Batch | 16 per device × 2 GPUs × 4 accumulation = 128 effective |
+| Precision | fp16 (T4 is Turing — no bf16) |
+| Label smoothing | 0.1 (IndicTrans2's own setting) |
+| Max sequence length | 128 |
+| Hardware | Kaggle, 2 × Tesla T4, DDP via `torchrun` |
+| Wall-clock | ~2h45m |
+
+Selection used `sentence-transformers/all-MiniLM-L6-v2` embeddings, mean cosine
+to the 5 nearest queries, with a per-query cap of 25 to stop any one query
+dominating the slice. A **random-slice control arm** trained identically scored
+12.49 against the selected arm's 13.52, which is what makes the +1.03
+attributable to semantic selection rather than to the corpus rebuild or to
+upweighting in general.
+
+Configuration lives in `config/r12_200m_selected.yaml`; the corpus manifest,
+including per-subset counts, in `data/processed/r12_corpus/manifest.json`.
+
+### 5.2 Diacritic restorer
+
+A separate 3.3M-parameter character-level tagger, trained from scratch. It is
+part of the system, not an accessory — see §4.
+
+| | |
+| --- | --- |
+| Architecture | 4-layer bidirectional transformer, d_model 256, 4-way per-character tagging (none / kasra / damma / fatha) |
+| Behaviour | **Insertion-only by construction.** It emits labels over an unchanged character sequence, so it cannot delete, reorder or substitute. |
+| Training text | 58,467 lines from the three most consistently diacritized sources (`bpcc:daily`, `bpcc:bpcc-seed-v1`, and the external corpus in §2), 6.73 restorable marks per 100 chars |
+| Epochs | 20 |
+| Held out | R0 references excluded by stripped-and-normalized string, so dev text cannot leak in undiacritized form |
+| Hardware | Kaggle T4; minutes, not hours |
+
+**Why it is necessary.** IndicTrans2's target vocabulary
+(`dict.TGT.json`, 122,672 entries) contains kasra, damma and fatha in *exactly
+one token each* — the bare standalone mark. To write `چھُس` the model would have
+to split a word to insert a bare diacritic that occurs in no natural subword
+context, and beam search never does. Measured on the fine-tuned model's output:
+0.000 of each per 100 characters, against references near 4.7. This is a
+property of the frozen pretrained vocabulary and **no amount of fine-tuning
+changes it.**
+
+Decoding uses a logit offset on the "no mark" class (`none_bias`), solved by
+bisection so output mark density matches a target. The shipped value is
+`+1.6836`: this restorer marks freely (11.49/100c unbiased) and is held back to
+9.85. The value is specific to this checkpoint and this input.
 
 ---
 
 ## 6. Reproduction
 
-See `README.md`. Three Hugging Face repos are gated and require accepting terms
-before download: `ai4bharat/indictrans2-en-indic-1B`, `ai4bharat/BPCC`, and
-`facebook/flores`.
+See `README.md`.
 
-Inference is `scripts/translate.py --input <file> --output <file>`. It requires
-`transformers==4.46.1`; newer releases break `IndicTransToolkit` at import.
+**Inference** — one command, decode plus restoration:
+
+```bash
+python scripts/generate_translations.py --input <input.csv> --output <out.csv>
+```
+
+`scripts/translate.py` is the raw decode tool and omits restoration by design;
+using it to produce a submission costs ~3.8 points.
+
+**Five** Hugging Face repos are gated and require accepting terms before
+download. Acceptance is per-repo and does **not** carry across a publisher's
+other repositories — a token that had just downloaded the 1B still returned 403
+on the 200M:
+
+- `ai4bharat/indictrans2-en-indic-1B`
+- `ai4bharat/indictrans2-en-indic-dist-200M`
+- `ai4bharat/indictrans2-indic-en-1B`
+- `ai4bharat/BPCC`
+- `facebook/flores`
+
+**Pinned environment** (`requirements-kaggle.txt`): `transformers==4.46.1`,
+`indictranstoolkit==1.1.1`, `sacrebleu==2.6.0`, `KashmiriNormalizer==0.1.0`.
+transformers must stay at 4.46.1 — newer releases drop the
+`PreTrainedTokenizerBase` re-export that IndicTransToolkit's collator imports.
+
+**Verify any checkpoint by generating text, never by loading without error.**
+IndicTrans2 ties `lm_head` to the decoder embeddings; `save_pretrained` drops
+the tied duplicate and this architecture's load path then zeroes both. A
+checkpoint here once loaded cleanly, logged "All the weights were initialized
+from the model checkpoint", and translated every input to the empty string.
+`generate_translations.py` guards against the equivalent failure in the
+restorer by refusing to write output when restoration added no marks.
 
 ---
 

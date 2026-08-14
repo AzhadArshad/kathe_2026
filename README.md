@@ -87,7 +87,37 @@ uv run python -m data.build_corpus \
 Step 2 must run before step 3. Step 3 asserts that the held-out count it
 removes equals the count it was given, and fails the build otherwise.
 
-## Translating and scoring
+## Translating — the one command that matters
+
+```bash
+.venv-decode/bin/python scripts/generate_translations.py \
+    --input englishdev.csv --output submission.csv
+```
+
+**`scripts/generate_translations.py` is the deliverable.** Input CSV in,
+scoreable CSV out, batch mode, no interactivity, no other steps. It decodes with
+the fine-tuned checkpoint and then restores the three short vowels that the
+model structurally cannot produce, which is not an optional polish step:
+
+| | leaderboard |
+| --- | ---: |
+| raw model output | 10.00 |
+| + diacritic restoration | **13.81** |
+
+IndicTrans2's target vocabulary holds kasra, damma and fatha in exactly one
+token each, so beam search never emits them and fine-tuning cannot fix a frozen
+vocabulary. A 3.3M-parameter character tagger puts them back, and it is worth
+more than every training-side change in this project combined. Restorer weights
+are fetched from the Hub automatically if they are not already on disk.
+
+The script refuses to write output whose row count changed, that contains an
+empty row, or where restoration ran without adding any marks — the three
+failure modes here that produce plausible-looking files scoring near zero.
+
+`--no-restore` exists only to inspect the decode in isolation. It costs ~3.8
+points; do not ship it.
+
+### Decoding and scoring during development
 
 ```bash
 .venv-decode/bin/python scripts/translate.py \
@@ -97,10 +127,13 @@ uv run python -m eval.score --hyp r0.hyp --ref data/dev/r0/r0.kas_Arab \
     --src data/dev/r0/r0.eng_Latn --name "R0 register-matched"
 ```
 
-`scripts/translate.py` is the live-round deliverable: `--input` / `--output`,
-batch mode, no interactivity. Scoring replicates the official scorer exactly —
-`KashmiriNormalizer==0.1.0` on both sides, BLEU tokenizer `13a`, chrF++ with
-`word_order=2`, reported as their geometric mean.
+`scripts/translate.py` is the raw decode tool and deliberately stops before
+restoration, because building lexicons and training restorers needs
+un-restored output. Do not use it to produce a submission.
+
+Scoring replicates the official scorer exactly — `KashmiriNormalizer==0.1.0`
+on both sides, BLEU tokenizer `13a`, chrF++ with `word_order=2`, reported as
+their geometric mean.
 
 Every submission must pass `scripts/validate_submission.py` before upload.
 Row order is never sorted: the official scorer is positional, so a

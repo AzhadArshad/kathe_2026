@@ -1,0 +1,46 @@
+# Submission 014 — R12-SELECTED decode + r11b_CLEAN restorer, replacing the lexicon.
+#
+# Third arm of the restorer A/B on one fixed decode
+# (`submissions/011/hyp.r12-selected.txt`). Everything but the restorer is held
+# constant against submissions 011 and 013:
+#
+#   011  lexicon (BPCC + nawabhussain)          LB 13.52
+#   013  r11_all.pt,    bias -0.7803            LB 12.97
+#   014  r11b_clean.pt, bias -0.7129            THIS
+#   015  r11b_dense.pt, bias +1.6836            sibling
+#
+# `r11b_clean` is the LONGER-TRAINED rerun of `r11_clean` — identical character
+# vocabulary, more epochs. Epochs matter a great deal for this model: r11_all
+# went from 34.7% to 61.3% tail precision between 6 and 20, so the 6-epoch
+# variants are not a fair test of the corpus they were trained on. That is why
+# r11b_* is used here and r11_clean.pt is not.
+#
+# BIAS. Solved by bisection to match sub 011's own mark count on the same text,
+# counted over `KashmiriNormalizer.constants.KASHMIRI_DIACRITICS` (the set
+# validate_submission.py prints, so the figures are comparable across
+# submissions):
+#
+#   sub 011 lexicon      9.8523/100c
+#   THIS  bias -0.7129   9.8563/100c
+#
+# Matching the total is what makes this a test of WHERE marks go rather than how
+# many. Submissions 008 (argmax, 1.91/100c, LB 10.05) and 010 (per-mark bars,
+# LB 10.64) both lost points on weights that scored 11.78 under a correctly
+# solved rule; quantity errors swamp placement differences.
+#
+# PRIOR, stated honestly: sub 013 showed the lexicon beats r11_all by 0.55 on
+# this decode, and lexicon token coverage here is 14.74% (up from 13.90% on
+# R3's output), so the tail a learned model would rescue is SMALLER than it was
+# when the two restorers tied at 11.81/11.78. A different training corpus does
+# not obviously change that. This arm is bought as information — it tests
+# whether the 0.55 loss is a property of learned restoration in general or of
+# r11_all's training mix specifically.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: models/restore/r11b_clean.pt
+restore_none_bias: -0.7129
+restore_merge: known

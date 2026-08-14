@@ -1,0 +1,46 @@
+# Submission 015 — R12-SELECTED decode + r11b_DENSE restorer, replacing the lexicon.
+#
+# Fourth arm of the restorer A/B on one fixed decode
+# (`submissions/011/hyp.r12-selected.txt`). Everything but the restorer is held
+# constant against submissions 011, 013 and 014:
+#
+#   011  lexicon (BPCC + nawabhussain)          LB 13.52
+#   013  r11_all.pt,    bias -0.7803            LB 12.97
+#   014  r11b_clean.pt, bias -0.7129            sibling
+#   015  r11b_dense.pt, bias +1.6836            THIS
+#
+# `r11b_dense` is the LONGER-TRAINED rerun of `r11_dense`. The original
+# `r11_dense` result was recorded as CONFOUNDED by compute (PLANNING.md
+# 2026-08-13) — it was cut short, not just trained on less text — so this rerun
+# is the first honest reading of the dense corpus.
+#
+# NOTE THE SIGN OF THE BIAS. Every other restorer in this project has needed a
+# NEGATIVE bias to reach reference density; r11b_dense needs +1.6836, i.e. it is
+# held BACK. Trained on the high-diacritic-density subset, it emits marks far
+# more freely than any sibling. That is a genuine behavioural difference and the
+# main reason this arm is worth a slot rather than being assumed to duplicate
+# 014: it is not the same model with a different seed.
+#
+# BIAS. Solved by bisection to match sub 011's own mark count on the same text,
+# counted over `KashmiriNormalizer.constants.KASHMIRI_DIACRITICS`:
+#
+#   sub 011 lexicon      9.8523/100c
+#   THIS  bias +1.6836   9.8537/100c
+#
+# Matching the total makes this a test of WHERE marks go, not how many —
+# submissions 008 and 010 both lost points to quantity errors on weights that
+# scored 11.78 under a correctly solved rule.
+#
+# CAVEAT specific to this arm: a large bias correction means the model is being
+# operated well away from where its training distribution put it, and the
+# decision rule is doing more work than in 013 or 014. If it underperforms, that
+# is a confound to name before blaming the dense corpus.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: 1.6836
+restore_merge: known

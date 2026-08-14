@@ -588,7 +588,21 @@ def main() -> int:
                       f"and note that anything already on the Hub is NOT loadable "
                       f"until make_checkpoint_portable() is applied to it.")
 
-        print(json.dumps(trainer.evaluate(), indent=2, default=str))
+    # NOT inside `if is_main`. `trainer.evaluate()` is a COLLECTIVE under DDP:
+    # every rank must enter it. Calling it on rank 0 only makes rank 0 wait for
+    # a partner that has already returned, and it hangs until the NCCL watchdog
+    # fires at 30 minutes and aborts the process with SIGABRT.
+    #
+    # Measured on R12 (2026-08-14): both arms trained all 6,960 steps, saved,
+    # and uploaded — then died here. Nothing of value was lost, but the non-zero
+    # exit marked both arms failed and skipped the copy of output/ into the
+    # results folder, so the download contained only logs.
+    #
+    # Kept outside the guard, with only rank 0 printing, so all ranks
+    # participate and one of them reports.
+    final_metrics = trainer.evaluate()
+    if is_main:
+        print(json.dumps(final_metrics, indent=2, default=str))
     return 0
 
 

@@ -1,0 +1,48 @@
+# Submission 013 — R12-SELECTED decode + LEARNED restorer, replacing the lexicon.
+#
+# A/B against submission 011 (LB 13.52), which is the SAME decode
+# (`submissions/011/hyp.r12-selected.txt`) with the lookup lexicon instead.
+# Everything else — model, beam, row order, normalizer settings — is identical.
+# The single variable is which restorer places the three short vowels.
+#
+# WHY THE BIAS IS -0.7773 AND NOT SUB 009's -1.0
+# `none_bias` is not a property of the model; it is a value solved against a
+# particular decode to land a particular mark count. On R3's output -1.0 gave
+# 9.71/100c and scored 11.78. On THIS decode -1.0 gives 8.226/100c against the
+# lexicon's 7.654 — a 7.5% over-production. Reusing it would have confounded
+# placement with quantity, which is exactly how submissions 008 (argmax,
+# 1.91/100c, LB 10.05) and 010 (per-mark, LB 10.64) lost points on weights that
+# scored 11.78 under a correctly-solved rule.
+#
+# So the bias was re-solved by bisection to match sub 011's own density on the
+# same text, counted over `KashmiriNormalizer.constants.KASHMIRI_DIACRITICS` —
+# the same set validate_submission.py reports, so the number in the validator
+# output is directly comparable across submissions:
+#
+#   sub 011 lexicon      9.8523/100c
+#   THIS  bias -0.7803   9.8510/100c
+#
+# (-1.0 on this decode gives 10.4104 — the 7.5% over-production noted above.)
+#
+# Same text, same number of marks, different placement. A score difference can
+# therefore only be attributed to WHERE the marks go.
+#
+# PRIOR EVIDENCE, stated honestly: on R3's decode these two restorers tied —
+# lexicon 11.81 (sub 007) vs model 11.78 (sub 009). And lexicon coverage of the
+# word tokens in this decode is 14.74%, slightly HIGHER than the 13.90% on R3's,
+# so the "R12 drifts off-lexicon and the model rescues the tail" mechanism is
+# not present. Expected value is near zero. This submission is bought as
+# information, not as a favourite.
+#
+# Model: models/restore/r11_all.pt — the 20-epoch all-sources char tagger, same
+# weights as submissions 008/009/010. The BPCC-only control scored 29.45 on R0
+# against all-sources; provenance is settled in favour of all-sources.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: models/restore/r11_all.pt
+restore_none_bias: -0.7803
+restore_merge: known

@@ -1,0 +1,57 @@
+# Submission 017 — R13 `hard` (x7 upweight) + r11b_dense restorer.
+#
+# MT ARM IS THE ONLY VARIABLE against submission 015 (LB 13.81). Restorer,
+# bias, and every normalizer setting are byte-identical to 015; the decode comes
+# from a different fine-tune.
+#
+#   sub  MT model                                   upweight   share   LB
+#   015  R12-selected                                  x3      40.4%   13.81
+#   017  R13 hard    — same 20,000-pair slice          x7      60.5%   THIS
+#   018  R13 sharp   — nearest 5,000, per-query cap 10 x31     60.0%   sibling
+#
+# R13 arms train 4 epochs, not 6, so total sample-passes match R12's 890,400
+# (hard 913,600). A gain here is therefore attributable to the REWEIGHTING and
+# not to extra compute — the confound that made the R11 `dense` result
+# unreadable (PLANNING.md 2026-08-13).
+#
+# Decode: beam 5, batch 32, Kaggle T4. 1,730 rows, 0 blank, 20 duplicate lines,
+# max intra-line token repetition 3 — no degenerate output.
+# current best system. This is submission 015's configuration, which scored
+# 13.81 on the Kaggle leaderboard — the project's best.
+#
+# DO NOT change a value here without a leaderboard reading behind it. Every
+# offline proxy in this project (R0 geometric mean, output density, lexicon
+# coverage) has at some point recommended a change that lost points. The scores
+# these settings beat, all on the same decode:
+#
+#   restorer                          LB
+#   r11b_dense.pt, bias +1.6836    13.81   <- THIS
+#   lexicon (BPCC + nawabhussain)  13.52
+#   r11b_clean.pt, bias -0.7129    13.19
+#   r11_all.pt,    bias -0.7803    12.97
+#   none (raw model output)        10.00
+#
+# THE RESTORER IS NOT OPTIONAL — it is worth +3.81, more than every training
+# change in the project combined. IndicTrans2's target vocabulary contains
+# kasra, damma and fatha in exactly one token each, so beam search never emits
+# them and no amount of fine-tuning can fix it (PROJECT_NOTES.md §3). Raw output
+# carries 0.000 of all three per 100 characters against references near 4.7.
+#
+# WHY none_bias IS POSITIVE. r11b_dense was trained on the high-diacritic-
+# density subset and marks far more freely than any sibling; left alone it emits
+# 11.49 marks/100c. +1.6836 holds it back to 9.85, matching the density of the
+# lexicon it replaced. The value was solved by bisection against the competition
+# input, so it is specific to this model, not a general setting.
+#
+# map_punctuation stays FALSE: measured 2026-08-11, ON scored 28.62 on R0
+# against OFF's 28.64, because fine-tuned output is already 75.6% Kashmiri-final
+# and only 0.2% Latin-final. Nothing left to map.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: 1.6836
+restore_merge: known

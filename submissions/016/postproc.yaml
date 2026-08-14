@@ -1,0 +1,39 @@
+# Submission 016 — R12-SELECTED decode, RAW. No restoration of any kind.
+#
+# Fifth arm on the same fixed decode (`submissions/011/hyp.r12-selected.txt`).
+# The scorer's own normalizer runs and nothing else: no lexicon, no learned
+# tagger, no punctuation mapping.
+#
+#   016  none (raw)                             THIS
+#   013  r11_all.pt,    bias -0.7803            LB 12.97
+#   014  r11b_clean.pt, bias -0.7129            LB 13.19
+#   011  lexicon                                LB 13.52
+#   015  r11b_dense.pt, bias +1.6836            LB 13.81
+#
+# THIS ARM CANNOT WIN. It is bought for one number: the MT-side gain from the
+# R12 corpus rebuild + semantic selection, measured on the same axis as
+# submission 002 (raw R3, LB 8.83). Every score above mixes the MT model with a
+# restorer, so nothing currently isolates how much the training-mix work was
+# worth on its own. That number sets expectations for the sharpened-retrieval
+# run, which is an MT-side change and cannot be judged against 13.81.
+#
+# WHY IT WILL SCORE LOW. Not a density argument — a leaderboard one. Every
+# restoration configuration ever submitted has beaten raw R3's 8.83, including
+# the two classified as failures: sub 008 (argmax, badly under-marked) scored
+# 10.05 and sub 010 (wrong per-mark mix) scored 10.64. Restoration has been
+# worth between +1.22 and +2.98 across eight scored submissions.
+#
+# The three restorable marks are absent from this output by construction, not by
+# accident. Measured on this decode: kasra 0.000, damma 0.000, fatha 0.000 per
+# 100 chars. IndicTrans2's target vocabulary contains each of them in exactly
+# one token (PROJECT_NOTES.md §3), so beam search never emits them and a fine-tune
+# cannot change a frozen vocabulary. hamza-below (2.764), inverted-damma
+# (0.429) and hamza-above (0.624) ARE produced and are unaffected by any of
+# this — `strip_key` touches only `frozenset("َُِ")`.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: null
