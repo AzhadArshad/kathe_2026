@@ -1,0 +1,43 @@
+# Submission 008 — R3 fine-tune + LEARNED diacritic restoration (R11).
+#
+# Same model, same decode, same row order as submissions 002-007. The ONLY
+# change is the restorer: a 3.3M-parameter character-level tagger replaces the
+# lookup table that produced submissions 003-007.
+#
+# Input is the RAW decode (`submissions/007/hyp.r3-200m.txt`, 0.00 restorable
+# marks per 100 characters — IndicTrans2 structurally cannot emit these three).
+# Feeding it sub 007's lexicon output instead would give byte-identical results,
+# because every restorer strips its input first, but raw is the honest input.
+#
+# Measured on R0 (1,003 pairs, tokenizer 13a), 2026-08-13:
+#
+#   raw, no restoration                        28.64
+#   clean lexicon, leak-free                   33.00
+#   sub 007 production lexicon                 33.36
+#   THIS (model `all`, 20 epochs, bias 0)      34.02   <- +0.66 over sub 007
+#   lexicon + model hybrid                     33.59
+#   ceiling (perfect restoration)              40.63
+#
+# Note the comparison is slightly UNDERSTATED: 419 of R0's 1,003 references
+# appear verbatim in the external corpus sub 007's lexicon was built from, so
+# part of its 33.36 is memorised dev data, while this model's training text had
+# R0 excluded by exact stripped string.
+
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+
+# No lexicon. The model alone beats every hybrid: trained to convergence it
+# already reaches 86.0% precision on words the lexicon knows AND 60.3% on the
+# tail it does not, so consulting the table only pulls it back (33.59 vs 34.02).
+diacritic_lexicon: null
+
+restore_model: models/restore/r11_all.pt
+
+# 0.0 is optimal. Making the model insert MORE marks moves output density toward
+# the reference's 4.68/100c and scores monotonically worse — 34.02 at bias 0,
+# 33.76 at -1.0. Density is an anomaly detector here, not an objective.
+restore_none_bias: 0.0
+restore_merge: known

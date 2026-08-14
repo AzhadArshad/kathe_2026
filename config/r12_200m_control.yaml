@@ -1,0 +1,103 @@
+# R12 CONTROL — identical corpus, size and x7 upweighting, but the upweighted
+# slice is RANDOM rather than retrieved. This is the arm that makes a result
+# interpretable: without it, a score change cannot be attributed to semantic
+# selection rather than to the corpus rebuild (raw not LaBSE-cleaned, mined data
+# dropped, 228,400 pairs instead of 123,538) or to upweighting in general.
+# R3 — full fine-tune of the 200M distilled model.
+#
+# Purpose: fast iteration and a first honest reading on whether fine-tuning
+# beats the 15.83 zero-shot baseline (FLORES devtest). The 1B LoRA run is the
+# real submission model; this one exists to de-risk it cheaply.
+#
+# Target hardware: Kaggle GPU T4 x2, launched under torchrun (DDP).
+# PROJECT_NOTES.md §5 — do not attempt this on the M2 Air.
+#
+# Every value here is a hyperparameter, so it lives in config, not in the .py
+# (PROJECT_NOTES.md §6). Anything non-obvious gets a reason recorded in PLANNING.md.
+
+model: ai4bharat/indictrans2-en-indic-dist-200M # MIT
+src_lang: eng_Latn
+tgt_lang: kas_Arab
+
+data_dir: data/processed/r12_control
+output_dir: output/r12-control
+seed: 42
+
+# --- adaptation method -------------------------------------------------------
+# "none" = full fine-tune. 124,538 pairs is enough to move all 200M parameters
+# (PLANNING.md R2), and a full fine-tune is the cleaner comparison point before
+# LoRA rank becomes another variable. The 1B run flips this to "lora".
+peft: none
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.1
+  target_modules: q_proj,k_proj
+
+# --- optimization ------------------------------------------------------------
+# lr 5e-5, NOT the 2e-4 in AI4Bharat's train_lora.sh. That value is tuned for
+# LoRA, where only the adapter moves; applying it to every parameter of a
+# distilled checkpoint erases the pretrained translation ability in a few
+# hundred steps.
+learning_rate: 5.0e-5
+lr_scheduler: inverse_sqrt
+warmup_steps: 500
+weight_decay: 0.01
+max_grad_norm: 1.0
+adam_beta1: 0.9
+adam_beta2: 0.98
+optimizer: adamw_torch
+label_smoothing: 0.1 # IndicTrans2's own training setting
+dropout: 0.1
+
+num_train_epochs: 6
+max_steps: -1 # -1 = honour num_train_epochs. A positive value overrides it.
+
+# batch 32 / seq 256 OOM'd on the T4 at step 0 (2026-08-10). The driver is the
+# decoder vocab: IndicTrans2 en-indic has 122,672 target tokens, and
+# cross_entropy upcasts logits to fp32, so the loss tensor alone is
+# batch * seq * 122672 * 4 bytes — 3.74 GiB at 32/256, against ~2.5 GiB free
+# after weights, gradients and Adam states.
+#
+# Effective batch is UNCHANGED at 128 (16 * 2 GPUs * 4), so the optimization is
+# identical to what was planned — only the memory profile moved.
+batch_size: 16 # per device
+grad_accum_steps: 4 # effective batch = 16 * 2 GPUs * 4 = 128
+
+# Measured on the actual corpus, not guessed: target tokens are mean 33.6,
+# p99.9 116, max 165; source tokens max 118. 256 was pure waste. At 128 we
+# truncate 0.03% of targets (~37 of 123,538) and no sources, and halve the
+# logits tensor again -> 0.94 GiB. Also caps generation_max_length at eval,
+# which is fine: the test set is ~39 characters.
+max_seq_length: 128
+
+# --- evaluation --------------------------------------------------------------
+# Held-out BPCC slice, NOT FLORES: FLORES dev is the knob-tuning set and devtest
+# is the reporting set, and keeping both out of the session avoids a gated
+# download on the critical path. See §metrics in src/train/finetune.py for why
+# this number is a PROXY and not comparable to the 15.83 baseline.
+eval_steps: 1200
+save_steps: 1200
+logging_steps: 100
+save_total_limit: 2
+eval_num_beams: 1 # greedy — this metric ranks checkpoints, it does not report
+metric_for_best_model: eval_geo_proxy
+greater_is_better: true
+early_stopping_patience: 5
+early_stopping_threshold: 1.0e-3
+print_samples: true
+
+# --- runtime -----------------------------------------------------------------
+fp16: true # T4 is Turing; fp16 tensor cores, no bf16
+group_by_length: true
+sortish_sampler: false # unreliable under DDP; group_by_length already batches by size
+num_workers: 2 # Kaggle T4 x2 gives 4 vCPU — more workers starve the main process
+num_proc: 4 # dataset .map workers
+report_to: none
+
+# --- checkpointing -----------------------------------------------------------
+# Kaggle sessions die (PROJECT_NOTES.md §5). Set hub_model_id and export HF_TOKEN to
+# push every save; leave hub_model_id null to keep checkpoints session-local.
+push_to_hub: true
+hub_model_id: Aju360/kathe-r12-200m-control
+hub_private_repo: true

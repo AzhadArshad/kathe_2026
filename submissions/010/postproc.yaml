@@ -1,0 +1,52 @@
+# Submission 010 — R11 learned restorer, PER-MARK CALIBRATED thresholds.
+#
+# Same decode, same weights as 002-009. The change is the DECISION RULE.
+#
+# Two defects, both in the rule rather than the model:
+#
+# 1. argmax is wrong for a low-base-rate task. Marks are ~4% of positions, so
+#    argmax (effectively P>0.5) discards most of the model's belief. Measured on
+#    the test decode: the model's own EXPECTED mark count is 3.64/100c, argmax
+#    emitted 1.91. That is what sub 008 submitted, and it scored 10.05 against
+#    sub 007's 11.81.
+#
+# 2. Sub 009 fixed the TOTAL with `none_bias -1.0` (9.71 all-marks against the
+#    reference 9.76) and scored 11.78 — but the MIX was still wrong:
+#
+#      mark    sub 009    reference
+#      kasra     48%         49%
+#      damma     45%         29%     <- over-produced
+#      fatha      7%         21%     <- starved
+#
+#    A single global knob cannot fix a proportion error. Fatha is emitted at a
+#    fifth of the reference rate by every system to date, the lexicon included.
+#
+# Thresholds below are calibrated per mark by binary search so each mark's
+# density on the TEST decode hits its reference share, at sub 009's validated
+# total. Result vs sub 009, all per 100 chars:
+#
+#            restorable   all-marks   kasra   damma   fatha
+#   ref          4.68        9.76      2.31    1.36    1.00
+#   sub 009      4.06        9.71      1.94    1.83    0.29
+#   THIS         3.93        9.58      1.96    1.13    0.83
+#
+# R0 says this is WORSE (33.46 against sub 009's 33.76). R0 is ignored here on
+# evidence: across the six post-processing submissions its rank correlation with
+# the leaderboard is rho = -0.31, against +0.83 for density closeness. R0 ranked
+# sub 008 first and it finished last by 1.76 points.
+
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+
+restore_model: models/restore/r11_all.pt
+restore_none_bias: 0.0
+restore_merge: known
+restore_threshold: null
+restore_mark_thresholds:
+  kasra: 0.2633
+  damma: 0.4096
+  fatha: 0.1382

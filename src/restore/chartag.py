@@ -278,10 +278,28 @@ class Restorer:
     lexicon sweep established that a WRONG diacritic beats NO diacritic under
     chrF++ (data/diacritize.py: dominance 0.0 > 0.6 > 0.9), so the
     accuracy-optimal threshold is not the score-optimal one.
+
+    Two decision rules are available, and the default one is wrong for this task:
+
+    * **argmax** (`threshold=None`) emits a mark only when P(mark) > P(none),
+      i.e. above 0.5. Marks are ~4% of positions, so most of the model's belief
+      sits below that line and is discarded. Measured on the 1,730-row test
+      decode: the model's own EXPECTED mark count is 3.64/100c, argmax emits
+      **1.91**. Half the signal is thrown away by the decision rule, not by the
+      model. That cost submission 008 1.76 leaderboard points.
+    * **thresholding** (`threshold=0.3`) emits the best-scoring mark wherever
+      P(any mark) clears the threshold. On a low-base-rate task this is the
+      right rule, and it can be set from the model's own expected count rather
+      than swept.
+
+    `mark_thresholds` allows one threshold per mark. Fatha needs it: every
+    system so far, the lexicon included, emits it at a fifth of the reference
+    rate, which a single global threshold cannot correct.
     """
 
     def __init__(self, path: str | Path, device: str = "cpu", none_bias: float = 0.0,
-                 batch_size: int = 128):
+                 batch_size: int = 128, threshold: float | None = None,
+                 mark_thresholds: dict | list | None = None):
         blob = torch.load(path, map_location="cpu", weights_only=False)
         self.cfg = ModelConfig(**blob["config"])
         self.vocab = Vocab.from_json(blob["vocab"])
@@ -292,6 +310,35 @@ class Restorer:
         self.none_bias = none_bias
         self.batch_size = batch_size
         self.meta = blob.get("meta", {})
+        self.threshold = threshold
+        if mark_thresholds is None:
+            self.mark_thresholds = None
+        elif isinstance(mark_thresholds, dict):
+            self.mark_thresholds = [mark_thresholds.get(n, 1.0) for n in MARK_NAMES[1:]]
+        else:
+            self.mark_thresholds = list(mark_thresholds)
+        if self.mark_thresholds and len(self.mark_thresholds) != N_LABELS - 1:
+            raise ValueError(f"mark_thresholds needs {N_LABELS - 1} values "
+                             f"({MARK_NAMES[1:]}), got {self.mark_thresholds}")
+
+    def _decide(self, probs: torch.Tensor) -> torch.Tensor:
+        """probs: (..., N_LABELS) -> label indices.
+
+        Three rules, most specific first. Per-mark thresholds compare each
+        mark's probability to its OWN threshold and take whichever clears its
+        bar by the widest relative margin, so one rare mark can be made easier
+        to emit without loosening the others.
+        """
+        if self.mark_thresholds:
+            t = torch.tensor(self.mark_thresholds, device=probs.device)
+            ratio = probs[..., 1:] / t.clamp(min=1e-9)
+            best = ratio.argmax(-1) + 1
+            return torch.where(ratio.max(-1).values >= 1.0, best, torch.zeros_like(best))
+        if self.threshold is not None:
+            best = probs[..., 1:].argmax(-1) + 1
+            return torch.where(1 - probs[..., 0] >= self.threshold, best,
+                               torch.zeros_like(best))
+        return probs.argmax(-1)
 
     def _tag(self, pieces: list[str]) -> list[list[int]]:
         out: list[list[int]] = []
@@ -305,7 +352,7 @@ class Restorer:
                 logits = self.model(ids.to(self.device)).float()
                 if self.none_bias:
                     logits[..., 0] += self.none_bias
-                pred = logits.argmax(-1).cpu()
+                pred = self._decide(logits.softmax(-1)).cpu()
             for i, p in enumerate(batch):
                 labels = pred[i, : len(p)].tolist()
                 # No mark may follow whitespace — see `encode`. This is the

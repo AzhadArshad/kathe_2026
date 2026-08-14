@@ -557,6 +557,37 @@ def main() -> int:
                 manifest.read_text(encoding="utf-8"), encoding="utf-8"
             )
         print(f" | > saved to {output_dir}")
+
+        # RE-UPLOAD the portable copy. `hub_strategy="every_save"` has been
+        # pushing raw Trainer checkpoints throughout training, and NONE of them
+        # contain `lm_head.weight` — save_pretrained drops it as a tied
+        # duplicate, and this architecture's load path then zeroes both it and
+        # the decoder embedding. Every one of those Hub checkpoints therefore
+        # loads without error and translates every input to the empty string
+        # (PLANNING.md 2026-08-10). Without this step push_to_hub is not crash
+        # insurance at all: it stores unusable weights.
+        #
+        # An explicit upload_folder is also what rescued R3 when the session
+        # nearly died (PLANNING.md 2026-08-10), so it is the recovery path with
+        # a track record here.
+        if cfg["push_to_hub"] and cfg.get("hub_model_id"):
+            try:
+                from huggingface_hub import HfApi
+
+                api = HfApi(token=os.environ.get("HF_TOKEN"))
+                api.create_repo(cfg["hub_model_id"], exist_ok=True,
+                                private=cfg.get("hub_private_repo", True))
+                api.upload_folder(folder_path=output_dir,
+                                  repo_id=cfg["hub_model_id"],
+                                  commit_message="portable checkpoint "
+                                                 "(lm_head.weight written, paths stripped)")
+                print(f" | > re-uploaded PORTABLE checkpoint to {cfg['hub_model_id']}")
+            except Exception as e:  # never lose a finished run to a push failure
+                print(f" | > WARNING: portable re-upload failed ({type(e).__name__}: {e}). "
+                      f"The local copy at {output_dir} IS correct — upload it by hand, "
+                      f"and note that anything already on the Hub is NOT loadable "
+                      f"until make_checkpoint_portable() is applied to it.")
+
         print(json.dumps(trainer.evaluate(), indent=2, default=str))
     return 0
 

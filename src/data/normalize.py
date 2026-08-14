@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata as ud
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from KashmiriNormalizer import KashmiriNormalizer
@@ -72,6 +72,40 @@ class NormConfig:
     # keyed on scorer-normalized word forms.
     diacritic_lexicon: str | None = None
 
+    # Path to a LEARNED restorer checkpoint from `restore.train` (R11). Restores
+    # the same three marks as `diacritic_lexicon`, but with a character-level
+    # tagger instead of a lookup table, so it generalises to word forms the
+    # lexicon has never seen. On R0 it scores 34.02 against the lexicon's 33.36.
+    #
+    # It may be combined with `diacritic_lexicon` via `restore_merge`, though
+    # measured 2026-08-13 the model ALONE beats every combination — once trained
+    # to convergence it already reproduces what the lexicon knew (86% precision
+    # on lexicon-known words) and consulting the table only drags it back.
+    restore_model: str | None = None
+
+    # Logit offset on the "no mark" class. NEGATIVE inserts more marks. Best on
+    # R0 is 0.0: pushing output density toward the reference density scores
+    # monotonically WORSE (see experiments/r11-restore/results.md).
+    restore_none_bias: float = 0.0
+
+    # How to combine the two restorers when both are set: `known` gives the
+    # lexicon every word it has an entry for, `changed` only the words it
+    # actually marks. Ignored unless BOTH are configured.
+    restore_merge: str = "known"
+
+    # Decision rule for the learned restorer. `restore_threshold` emits a mark
+    # wherever P(any mark) clears it; `restore_mark_thresholds` gives each mark
+    # its own bar. Both replace argmax, which is the WRONG rule here: marks are
+    # ~4% of positions, so argmax (effectively P>0.5) discarded half the model's
+    # expected marks and cost submission 008 1.76 leaderboard points.
+    #
+    # Per-mark bars exist because the mark PROPORTIONS were wrong, not just the
+    # total. Sub 009 emitted kasra/damma/fatha at 48/45/7 percent against a
+    # reference 49/29/21 — damma over-produced, fatha starved. Every system to
+    # date, the lexicon included, emits fatha at a fifth of the reference rate.
+    restore_threshold: float | None = None
+    restore_mark_thresholds: dict | None = None
+
 
 DEFAULT = NormConfig()
 
@@ -115,21 +149,68 @@ def normalize(text: object, cfg: NormConfig = DEFAULT) -> str:
     if cfg.collapse_whitespace:
         s = _MULTISPACE.sub(" ", s)
 
+    return _restore_batch([s.strip()], cfg)[0]
+
+
+# Cached per (path, bias): loading a 3.3M-parameter checkpoint once per ROW
+# would dominate everything else in a 1,730-row submission.
+_RESTORER_CACHE: dict[tuple, object] = {}
+
+
+def _restorer(cfg: NormConfig):
+    mt = cfg.restore_mark_thresholds
+    key = (cfg.restore_model, cfg.restore_none_bias, cfg.restore_threshold,
+           tuple(sorted(mt.items())) if mt else None)
+    if key not in _RESTORER_CACHE:
+        from restore.chartag import Restorer
+
+        _RESTORER_CACHE[key] = Restorer(
+            cfg.restore_model, device="cpu", none_bias=cfg.restore_none_bias,
+            threshold=cfg.restore_threshold, mark_thresholds=mt)
+    return _RESTORER_CACHE[key]
+
+
+def _restore_batch(rows: list[str], cfg: NormConfig) -> list[str]:
+    """Apply whichever diacritic restorer(s) are configured, to a whole batch.
+
+    Restoration is the LAST step and is factored out of `normalize` so that
+    `normalize_many` can run the neural restorer on all rows at once. Per-row
+    inference on 1,730 rows is correct but wasteful; batching is ~20x faster and
+    produces identical output, because the tagger conditions only on its own
+    sentence.
+
+    Both restorers are insertion-only and both strip their input first, so this
+    is idempotent: handing it already-restored text yields the same result as
+    handing it raw model output.
+    """
+    if not (cfg.diacritic_lexicon or cfg.restore_model):
+        return rows
+
+    # Delegate to restore.combine so the backoff chain and the merge rules have
+    # exactly ONE implementation. The lexicon path was duplicated here once, and
+    # when the lexicon gained two more context tables this copy silently kept
+    # using only the old flat one — scoring 31.20 instead of 33.50, no error.
+    from restore.combine import restore_all
+
+    lut = ctx = None
     if cfg.diacritic_lexicon:
-        # Delegate to data.diacritize so the backoff chain has exactly ONE
-        # implementation. It was duplicated here once, and when the lexicon
-        # gained two more context tables this copy silently kept using only the
-        # old flat one — scoring 31.20 instead of 33.50 with no error at all.
-        from data.diacritize import restore
-
         lut, ctx = _lexicon(cfg.diacritic_lexicon)
-        s = restore(s, lut, ctx)
+    model = _restorer(cfg) if cfg.restore_model else None
 
-    return s.strip()
+    if lut is not None and model is not None:
+        mode = cfg.restore_merge
+    elif model is not None:
+        mode = "model"
+    else:
+        mode = "lexicon"
+    return restore_all(rows, mode, lut, ctx, model)
 
 
 def normalize_many(values, cfg: NormConfig = DEFAULT) -> list[str]:
-    return [normalize(v, cfg) for v in values]
+    """Batch form. Identical output to `normalize` per row, but restoration runs
+    once over the whole list rather than once per row."""
+    plain = replace(cfg, diacritic_lexicon=None, restore_model=None)
+    return _restore_batch([normalize(v, plain) for v in values], cfg)
 
 
 def score(hyps: list[str], refs: list[str]) -> dict[str, float]:

@@ -2,12 +2,43 @@
 
 Branch `r11-restore`. Run 2026-08-13, Kaggle T4.
 
-## Verdict, up front
+## Verdict, up front — SETTLED ON THE LEADERBOARD
 
-**NEGATIVE as trained. Nothing submitted.** The learned restorer scores **30.41
-on R0** against the production lexicon's **33.36**, and every hybrid of the two
-lands at or below the lexicon alone. But this is a negative result about a
-6-epoch run, not about the approach, and the diagnostic below says which.
+**The learned restorer MATCHES the lexicon and does not beat it: 11.78 against
+sub 007's 11.81.** Sub 007 stays production.
+
+The 6-epoch run was genuinely under-trained and 20 epochs fixed it — held-out
+micro-F1 14.93 -> 61.45, tail precision 34.7% -> 61.3%, and on R0 the model
+alone went from 30.41 (below the lexicon) to **34.02 (above it, +0.66)**. None
+of that reached the leaderboard.
+
+| sub | system | R0 geo | test density | **LB** |
+| --- | --- | ---: | ---: | ---: |
+| 007 | BPCC+ext lexicon | 33.36 | 9.32 | **11.81** |
+| 009 | R11 model, `none_bias -1.0` | 33.76 | 9.71 | **11.78** |
+| 008 | R11 model, `none_bias 0.0` | **34.02** | **7.65** | **10.05** |
+
+**The system that ranked FIRST on R0 finished LAST**, by 1.76 points. Over the
+six post-processing submissions, Spearman against the leaderboard is **R0 geo
+rho = -0.31**, output-density-closeness **rho = +0.83**. R0 is anti-predictive
+here; density is the signal. Both 008 and 009 were submitted together precisely
+because the two disagreed, which is what made this measurable in one day.
+
+Everything below is the offline record, and it is worth reading mainly as a
+case study in an offline metric being confidently wrong.
+
+
+## The 6-epoch record (superseded — kept because the diagnosis was right)
+
+Everything from here to §Provenance describes the FIRST run, at 6 epochs. It
+was negative on R0 and it correctly diagnosed itself as under-trained; the
+20-epoch rerun confirmed that. Read it as the reasoning that led to the rerun,
+not as a description of the model.
+
+**NEGATIVE as trained.** The learned restorer scores **30.41 on R0** against the
+production lexicon's **33.36**, and every hybrid of the two lands at or below
+the lexicon alone. But this is a negative result about a 6-epoch run, not about
+the approach, and the diagnostic below says which.
 
 | System | R0 geo | vs sub 007 |
 | --- | ---: | ---: |
@@ -17,7 +48,7 @@ lands at or below the lexicon alone. But this is a negative result about a
 | *(clean lexicon alone, leak-free — see §Leak)* | *33.00* | *−0.36* |
 | *(ceiling: perfect restoration)* | *40.63* | *+7.27* |
 
-## Why it fails, measured rather than guessed
+## Why it failed at 6 epochs, measured rather than guessed
 
 The whole argument for a learned model was the lexicon's **tail**: unseen words
 return nothing, and Kashmiri's morphological tail is long. That premise is
@@ -75,8 +106,26 @@ falls monotonically as density approaches it. A mis-calibrated marking prior is
 therefore not what costs the points — if it were, this knob would recover them
 for free. It does the opposite, because the extra marks it buys are wrong ones.
 
-This also settles the density question for R11 the way PLANNING.md 2026-08-12
-settled it for the lexicon: **density is an anomaly detector, not an objective.**
+> **REFUTED ON THE LEADERBOARD, 2026-08-13. Read this paragraph as the mistake
+> it was.** Everything above is a correct statement about R0 and a false one
+> about the competition. The same knob, measured against the real test set:
+>
+> | `none_bias` | test density | R0 geo | **LB** |
+> | ---: | ---: | ---: | ---: |
+> | 0.0 | 7.65 | **34.02** | **10.05** |
+> | −1.0 | 9.71 | 33.76 | **11.78** |
+>
+> **Moving density onto the reference is worth +1.73 leaderboard points**, while
+> costing 0.26 on R0. The conclusion drawn here — that density calibration is
+> "not the problem" — was drawn entirely from an offline metric that turns out
+> to be *anti*-predictive for this class of change (rho = −0.31 against the
+> leaderboard, versus +0.83 for density closeness).
+>
+> The failure was not the measurement but the inference: R0's own density is
+> two-thirds a sampling artifact (§ below), so "R0 prefers sparse output" was
+> never evidence about the real references, and it should not have been treated
+> as settling anything. **Density is the primary offline signal for
+> post-processing; R0 breaks ties among density-matched candidates only.**
 
 **2. The training/application LENGTH mismatch is real but not load-bearing.**
 R11 trains on text averaging 91 characters and is applied to output averaging
