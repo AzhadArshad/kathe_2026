@@ -27,6 +27,17 @@ data/dev/*
 !data/dev/.gitkeep
 !data/README.md
 
+# EXCEPTION, added 2026-08-16: the diacritic lexicon SHIPS.
+# It is a required runtime input to the live-round pipeline, not a derived
+# corpus — config/postproc_live.yaml names it, and with it absent the best
+# system (sub 024, LB 15.05) silently degrades to sub 019's (13.99). It is
+# 1.7 MB, so the "large data stays local" rule does not apply, and unlike the
+# restorer weights there is no Hub fallback to fetch it from.
+# Provenance is BPCC (CC-BY-4.0, attribution in NOTICE) + nawabhussain
+# Kashmiri-Language-Corpus (Apache-2.0); both are already disclosed in
+# MODEL_CARD.md §2. It contains word forms, not corpus text.
+!data/processed/diacritic_lexicon_both.json
+
 # Loose corpora anywhere
 *.jsonl
 *.tsv
@@ -80,10 +91,10 @@ nohup.out
 
 # --- internal working docs ---------------------------------------------------
 # Private planning and agent context; not part of the public deliverable.
-# NOTE: PLANNING.md currently holds the only copy of the data-pipeline
-# reproduction steps and the R2 numbers. Those need to live in README.md before
-# the repo goes public -- reproduction instructions are an expected part of the
-# open-source deliverable.
+# RESOLVED 2026-08-16, before the repo went public: the data-pipeline
+# reproduction steps now live in README.md ("Reproducing the pipeline") and the
+# corpus figures in MODEL_CARD.md §2, so excluding these two files no longer
+# withholds anything the open-source deliverable is expected to carry.
 PROJECT_NOTES.md
 PLANNING.md
 

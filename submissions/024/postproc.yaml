@@ -1,0 +1,15 @@
+# Union with the model held BACK (bias +1.6836), so the lexicon dominates and
+# the model contributes only where it is most confident. Density 11.30.
+#
+# This is the CONTROL for 022/023: it asks whether the model half of the union
+# is pulling its weight at all, or whether 021 won mostly on the lexicon. If
+# this beats 021, less model is better and the tail experiments are pointless.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: 1.6836
+restore_merge: known

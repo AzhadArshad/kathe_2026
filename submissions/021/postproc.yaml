@@ -1,0 +1,41 @@
+# Submission 021 — sub 019's system PLUS the lexicon. Union of two restorers.
+#
+# Same decode (R12-selected) and same r11b_dense weights at bias 0.0 as sub 019
+# (LB 13.99, best). The ONLY change: the diacritic lexicon is consulted as well,
+# so words it has an explicit entry for get its marks and everything else keeps
+# the model's. This can only ADD marks, never remove them.
+#
+#   sub  restorer                        density    LB
+#   019  model alone, bias 0.0             11.49   13.99
+#   021  model + lexicon (merge: known)    12.36   THIS
+#   020  model alone, bias -0.8281         12.50   13.79
+#   015  model alone, bias +1.6836          9.85   13.81
+#   011  lexicon alone                      9.85   13.52
+#
+# RATIONALE — the recall asymmetry. chrF++ runs at beta=2, weighting recall
+# above precision, and that single property explains both of 2026-08-15's
+# results: sub 019 won by emitting MORE marks, while R13's hard/sharp lost by
+# emitting FEWER content words (12.3% and 18.4% of rows lose tokens). On this
+# metric, over-producing is cheap and under-producing is expensive. A union of
+# two restorers is the only remaining zero-compute way to produce more.
+#
+# THE HONEST RISK, recorded before the score is known. 12.36/100c is within
+# 0.14 of sub 020's 12.50, which scored 13.79 — BELOW 019. If total density is
+# what drives the curve, this lands near 13.8 and loses. The bet is that
+# PLACEMENT differs: 020 was the model marking more freely, whereas this adds
+# marks only where the lexicon has a specific entry and the model declined.
+# Against the bet: at a matched 9.85 the lexicon alone (13.52) placed WORSE than
+# the model alone (13.81), so the marks being added are from the weaker of the
+# two components.
+#
+# `known` and `changed` produce byte-identical output on this decode, so the
+# merge mode is not a free variable here.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: 0.0
+restore_merge: known

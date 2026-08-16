@@ -1,30 +1,50 @@
 # Post-processing for the LIVE ROUND and for every submission built from the
-# current best system. This is submission 015's configuration, which scored
-# 13.81 on the Kaggle leaderboard — the project's best.
+# current best system. This is submission 024's configuration, which scored
+# **15.05** on the Kaggle leaderboard — the project's best.
+#
+# UPDATED 2026-08-16. This file previously held submission 019's configuration
+# (13.99): `diacritic_lexicon: null`, `restore_none_bias: 0.0`. That was 1.06
+# points behind by the time it was found, because submissions 021-024 changed
+# the restorer from the model ALONE to a UNION of the model and the lexicon and
+# nobody re-pointed the live config. If the live round had run from this file
+# it would have reproduced a system a full point below the one on the
+# leaderboard. Re-check this file against the leaderboard after every
+# submission — it is the only artifact whose staleness is silent.
 #
 # DO NOT change a value here without a leaderboard reading behind it. Every
-# offline proxy in this project (R0 geometric mean, output density, lexicon
-# coverage) has at some point recommended a change that lost points. The scores
-# these settings beat, all on the same decode:
+# offline proxy in this project — R0 geometric mean (rho -0.39), output density,
+# lexicon coverage — has at some point recommended a change that lost points.
 #
-#   restorer                          LB
-#   r11b_dense.pt, bias +1.6836    13.81   <- THIS
-#   lexicon (BPCC + nawabhussain)  13.52
-#   r11b_clean.pt, bias -0.7129    13.19
-#   r11_all.pt,    bias -0.7803    12.97
-#   none (raw model output)        10.00
+# THE MEASURED CURVE, all on the same R12-selected decode. `restore_none_bias`
+# in merge `known` acts ONLY on words the lexicon has no entry for, because the
+# lexicon overrides every word it knows. So this knob is exactly "how freely
+# does the model mark the tail":
 #
-# THE RESTORER IS NOT OPTIONAL — it is worth +3.81, more than every training
-# change in the project combined. IndicTrans2's target vocabulary contains
-# kasra, damma and fatha in exactly one token each, so beam search never emits
-# them and no amount of fine-tuning can fix it (PROJECT_NOTES.md §3). Raw output
-# carries 0.000 of all three per 100 characters against references near 4.7.
+#   sub  bias        density    LB
+#   023  -1.5000       13.78   14.25
+#   022  -0.8281       13.12   14.53
+#   021   0.0000       12.36   14.82
+#   024  +1.6836       11.30   15.05   <- THIS
+#   025  +2.2500       11.03   15.04   <- ties 024 within 0.01; the top is FLAT
+#   026  +3.2500       10.62   14.91
+#   011  +inf (none)    9.85   13.52   <- lexicon alone; the limit of this knob
 #
-# WHY none_bias IS POSITIVE. r11b_dense was trained on the high-diacritic-
-# density subset and marks far more freely than any sibling; left alone it emits
-# 11.49 marks/100c. +1.6836 holds it back to 9.85, matching the density of the
-# lexicon it replaced. The value was solved by bisection against the competition
-# input, so it is specific to this model, not a general setting.
+# Monotone: every step that gave the model more say on the tail cost score. The
+# +inf endpoint is measured too (sub 011 is byte-identical but for
+# `restore_model: null`), so a maximum provably exists inside (+1.6836, +inf);
+# 025 and 026 bisected it and BOTH came in at or below 15.05, so sub 024 is the
+# peak and this route is closed. The top is broad — anything in bias [1.68, 2.25]
+# scores the same — so this setting is not balanced on a knife edge.
+#
+# THE RESTORER IS NOT OPTIONAL — raw decode scores 10.00 against 15.05 here,
+# more than every training-side change in the project combined. IndicTrans2's
+# target vocabulary contains kasra, damma and fatha in exactly one token each,
+# so beam search never emits them and no amount of fine-tuning can repair a
+# frozen vocabulary (PROJECT_NOTES.md §3).
+#
+# BOTH restorers are required. `diacritic_lexicon` is NOT optional here: with it
+# null this becomes submission 019's system (13.99). The lexicon file is small
+# and ships with the repo — see data/README.md.
 #
 # map_punctuation stays FALSE: measured 2026-08-11, ON scored 28.62 on R0
 # against OFF's 28.64, because fine-tuned output is already 75.6% Kashmiri-final
@@ -34,7 +54,7 @@ unicode_form: null
 map_punctuation: false
 strip_zwj: false
 collapse_whitespace: false
-diacritic_lexicon: null
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json
 restore_model: models/restore/r11b_dense.pt
 restore_none_bias: 1.6836
 restore_merge: known

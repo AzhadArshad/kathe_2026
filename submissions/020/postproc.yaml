@@ -1,0 +1,39 @@
+# Submission 020 — same, pushed PAST native density to 12.50/100c.
+#
+# Same decode (R12-selected, the best MT arm — R13's x7 and x31 both regressed),
+# same restorer weights as sub 015 (LB 13.81). The ONLY change is how many marks
+# it is allowed to emit.
+#
+# EVERY restorer submission to date has been suppressed toward ~9.3-9.9/100c,
+# because each was solved to match either R0's reference density or the lexicon
+# it replaced. That anchor is R0-derived, and R0 has been anti-predictive all
+# project (rho -0.39). The right-hand side of the density curve has never been
+# sampled:
+#
+#   sub  density  LB
+#   008     1.91  10.05
+#   007     9.32  11.81
+#   010     9.36  10.64
+#   009     9.71  11.78
+#   015     9.85  13.81
+#   019    11.49  sibling
+#   020    12.50  THIS   <- deliberate over-marking
+#
+# WHY UP RATHER THAN DOWN. chrF++ runs at beta=2, weighting recall above
+# precision: a mark the reference has and we omit costs more than one we add
+# that it lacks. BLEU pulls the other way (n-gram precision), so the optimum is
+# a trade — but there is no reason it sits at reference density, and the
+# recall weighting argues it sits above.
+#
+# r11b_dense unbiased emits 11.49/100c. Sub 015 held it back to 9.85 with
+# +1.6836 and still won. That bias may have been a handicap the model overcame
+# rather than a correction that helped it. bias 0.0 removes it.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: null
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: -0.8281
+restore_merge: known

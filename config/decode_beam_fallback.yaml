@@ -1,41 +1,54 @@
-# Live-round FALLBACK decode: plain beam search, no MBR.
+# Live-round decode profile — beam search. MEASURED 2026-08-16.
 #
-# This is the configuration to run if MBR is too slow on the organizers' machine
-# on 2026-08-21. Fifteen-plus teams get verified in one session, so a decode
-# that is correct but slow is a real risk to the round even though no runtime
-# limit was stated (PLANNING.md Q4, §Risk register).
+# ORIGINALLY written as the fallback in case R5 (MBR) proved too slow. R5 was
+# rejected on quality, not speed (it scored 32.67 on R0 against beam's 33.36 —
+# see experiments/r5-mbr/results.md), so **beam search is not a fallback, it is
+# the shipped decode.** This file is now the record of what that decode costs.
 #
-# It reproduces submission 007 EXACTLY — same checkpoint, same beam, same
-# post-processing. The only thing given up is the MBR selection stage, so the
-# fallback is not a degraded guess: it is the system that scored 11.81.
+# It also no longer names the R3 200M checkpoint it was written against; the
+# shipped translation model is the R12-selected fine-tune. The single source of
+# truth for post-processing is config/postproc_live.yaml.
 #
-#   python scripts/translate.py \
-#       --input  data/raw/englishdev.csv \
-#       --output out/hyp.beam.txt \
-#       --model  models/r3-200m-full \
-#       --beam 5 --batch-size 16 --length-penalty 1.0
+# THE ONE COMMAND (see README §"Translating — the one command that matters"):
 #
-#   python scripts/make_submission.py \
-#       --source     data/raw/englishdev.csv \
-#       --hypotheses out/hyp.beam.txt \
-#       --postproc   config/postproc_r3_both.yaml \
-#       --output     out/submission.csv
+#   python scripts/generate_translations.py \
+#       --input englishdev.csv --output submission.csv
 #
-# Cost comparison, measured — fill both rows from the R5 run before the live
-# round and keep them here, because the decision on the day is made from these
-# two numbers and nothing else:
+# Everything below is that script's default. It is recorded here so the cost is
+# known before the day rather than discovered on it.
 #
-#   beam 5          : __ s/sentence   (1,730 sentences -> __ min)
-#   MBR 32 epsilon  : __ s/sentence   (1,730 sentences -> __ min)
+# MEASURED — full 1,730-row test set, from a simulated FRESH CLONE, CPU only
+# (Apple M2, 4 cores, 8 GB; weights already cached):
 #
-# Switching rule for the day: if the MBR estimate exceeds the time the
-# organizers give, run this file's command instead. It needs no extra flags and
-# no pool files, so it cannot fail for a reason MBR would not also hit.
+#   wall clock          354.1 s   (5 min 54 s) end to end, decode + restore + write
+#   per sentence        0.205 s
+#   throughput          ~4.9 sentences/s
+#   peak RSS            3.14 GB
+#
+# **There is no latency risk in the live round.** The whole test set decodes in
+# under six minutes on a laptop CPU with no GPU at all, so nothing here needs a
+# faster fallback and no accelerator needs to be requested. A T4 is roughly an
+# order of magnitude quicker again.
+#
+# DEVICE SENSITIVITY — the one caveat, and it is expected rather than a defect.
+# The same input decoded on CPU fp32 differs from the submitted CSV (decoded on
+# GPU fp16) in **20 of 1,730 rows, 1.16%**. The differing rows are ordinary beam
+# near-ties resolved the other way by a different float accumulation order, e.g.
+#
+#   row 250  CPU  سُہ درٛاو اورٕ تہٕ درٛاو واپس بس سِٹیشنس کُن۔
+#            GPU  سُہ درٛاو اورٕ یور تہٕ درٛاو واپس بس سٹیشنس کُن۔
+#
+# So an organizer re-running this will NOT get a byte-identical file to the one
+# uploaded to Kaggle. That is inherent to floating-point beam search across
+# devices and is not fixable by pinning versions. If byte-identity is required,
+# it must be reproduced on the same device class the submission was decoded on.
+# Row order, row count and IDs are exact in every case — those are what the
+# positional scorer actually depends on (PROJECT_NOTES.md §3).
 
-model: models/r3-200m-full
+model: Aju360/kathe-r12-200m-selected
 decode: beam
 num_beams: 5
 length_penalty: 1.0
 max_new_tokens: 256
 batch_size: 16
-postproc: config/postproc_r3_both.yaml
+postproc: config/postproc_live.yaml

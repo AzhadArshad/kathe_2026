@@ -102,7 +102,9 @@ model structurally cannot produce, which is not an optional polish step:
 | | leaderboard |
 | --- | ---: |
 | raw model output | 10.00 |
-| + diacritic restoration | **13.81** |
+| + diacritic lexicon | 13.52 |
+| + learned restorer | 13.99 |
+| **+ both (union — the shipped system)** | **15.05** |
 
 IndicTrans2's target vocabulary holds kasra, damma and fatha in exactly one
 token each, so beam search never emits them and fine-tuning cannot fix a frozen
@@ -114,7 +116,7 @@ The script refuses to write output whose row count changed, that contains an
 empty row, or where restoration ran without adding any marks — the three
 failure modes here that produce plausible-looking files scoring near zero.
 
-`--no-restore` exists only to inspect the decode in isolation. It costs ~3.8
+`--no-restore` exists only to inspect the decode in isolation. It costs 5.05
 points; do not ship it.
 
 ### Decoding and scoring during development

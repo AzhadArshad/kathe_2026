@@ -1,0 +1,53 @@
+# Submission 025 — union restorer, model suppressed FURTHER on the tail.
+# bias 1.6836 -> 2.25.
+#
+# Same decode (R12-selected) and same union (r11b_dense + lexicon, merge
+# `known`) as sub 024, which scored 15.05 and is the best result of the project.
+# The only change is `restore_none_bias`, which in `known` mode acts ONLY on
+# words the lexicon has no entry for — the lexicon overrides everything it
+# knows, so this knob is purely "how freely does the model mark the tail".
+#
+# WHY UP AGAIN. 2026-08-16 produced a clean monotone sweep, and it runs opposite
+# to the hypothesis 022/023 were written to test:
+#
+#   bias        tail marks      LB
+#   -1.5        most           14.25  (sub 023)
+#   -0.8281      |             14.53  (sub 022)
+#    0.0         |             14.82  (sub 021)
+#   +1.6836     fewest         15.05  (sub 024)  <- best, and the EDGE of the sweep
+#
+# Every step that gave the model more say on the tail cost score, in order, with
+# no inflection. The sweep stopped at its own boundary, so the peak had not been
+# located — only bounded from below.
+#
+# THE PEAK IS PROVABLY INTERIOR. Submission 011 is byte-identical to 024 except
+# `restore_model: null`, and in `known` mode that IS the bias -> +inf limit: no
+# model, so lexicon-unknown words stay bare. It scored 13.52. So:
+#
+#   bias +1.6836 -> 15.05      (sub 024)
+#   bias +inf    -> 13.52      (sub 011)
+#
+# A maximum therefore exists strictly inside (+1.6836, +inf). This submission
+# and 026 bisect that interval.
+#
+# PLACEMENT. 719 of 1,730 rows (41.6%) differ between sub 024 and the
+# lexicon-only limit; that population is the natural coordinate. bias 2.25
+# changes 185 of them (26% of the way to the limit). This is the CONSERVATIVE
+# probe, placed near 024 because the evidence says the peak is close: the climb
+# from bias 0.0 to 1.6836 bought only +0.23, while the fall from 1.6836 to +inf
+# is -1.53. The function is much steeper on the high side, so the optimum is
+# likely nearer 024 than the midpoint.
+#
+# HONEST RISK. 15.05 vs 14.82 is +0.23, and this project has seen 13.79 vs 13.81
+# separated by 0.02 — inside noise. If 025 and 026 both land below 15.05, the
+# correct read is that sub 024 is at or past the peak and this route is finished,
+# NOT that a third probe is warranted.
+scorer_normalizer: true
+unicode_form: null
+map_punctuation: false
+strip_zwj: false
+collapse_whitespace: false
+diacritic_lexicon: data/processed/diacritic_lexicon_both.json
+restore_model: models/restore/r11b_dense.pt
+restore_none_bias: 2.25
+restore_merge: known

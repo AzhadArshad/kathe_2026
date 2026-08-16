@@ -1,20 +1,23 @@
 # Model Card — KATHE 2026 English → Kashmiri
 
-**Status: current as of 2026-08-14.** Describes the system that scores **13.81**
-on the competition leaderboard.
+**Status: current as of 2026-08-16.** Describes the system that scores **15.05**
+on the competition leaderboard (submission 024).
 
 - **Task:** English (`eng_Latn`) → Kashmiri, Perso-Arabic script (`kas_Arab`)
 - **Competition:** KATHE 2026, Gaash Lab / NIT Srinagar + Bureau of Indian Standards
 - **Author:** Azhad Arshad (solo entry, team *Noore*)
-- **Repository:** `<TBD — public URL, due 2026-08-16>`
+- **Repository:** https://github.com/AzhadArshad/kathe_2026
 
-**The system is two models, and both are required.** Shipping only the
-translation model gives 10.00 instead of 13.81 (§4):
+**The system is two models plus a lexicon, and all three are required.**
+Shipping only the translation model gives 10.00 instead of 15.05 (§4). Dropping
+the lexicon and keeping the restorer gives 13.99. Dropping the restorer and
+keeping the lexicon gives 13.52:
 
 | Component | Weights | Licence | Status |
 | --- | --- | --- | --- |
-| Translation — 200M full fine-tune | `Aju360/kathe-r12-200m-selected` | Apache-2.0 (MIT notice retained) | **private, must be public by 2026-08-17** |
-| Diacritic restorer — 3.3M char tagger | `r11b_dense.pt` → `Aju360/kathe-diacritic-restorer` | Apache-2.0 (see §2) | **not yet published** |
+| Translation — 200M full fine-tune | [`Aju360/kathe-r12-200m-selected`](https://huggingface.co/Aju360/kathe-r12-200m-selected) | Apache-2.0 (MIT notice retained) | **public** |
+| Diacritic restorer — 3.3M char tagger | [`Aju360/kathe-r11-restorer`](https://huggingface.co/Aju360/kathe-r11-restorer) → `r11b_dense.pt` | Apache-2.0 (see §2) | **public** |
+| Diacritic lexicon — 48k word forms | `data/processed/diacritic_lexicon_both.json` | derived; see §2 | ships in-repo |
 
 Run both with one command: `scripts/generate_translations.py`.
 
@@ -234,11 +237,14 @@ from an R0 score.
 | R12-selected — 200M, semantically selected corpus, raw | 10.00 |
 | R3 + diacritic lexicon | 11.81 |
 | R12-selected + diacritic lexicon | 13.52 |
-| **R12-selected + learned diacritic restorer** | **13.81** |
+| R12-selected + learned restorer, density 9.85 | 13.81 |
+| R12-selected + learned restorer, density 11.49 | 13.99 |
+| R12-selected + restorer ∪ lexicon, tail bias 0.0 | 14.82 |
+| **R12-selected + restorer ∪ lexicon, tail bias +1.6836** | **15.05** |
 
 Two levers account for the gap from 8.83, and they are unequal:
 
-- **Diacritic restoration: +3.81.** The single largest contribution.
+- **Diacritic restoration: +5.05.** The single largest contribution by far.
 - **Training-mix selection: +1.17.** Rebuilding the corpus from raw BPCC and
   upweighting pairs semantically near the dev distribution.
 
@@ -296,10 +302,35 @@ context, and beam search never does. Measured on the fine-tuned model's output:
 property of the frozen pretrained vocabulary and **no amount of fine-tuning
 changes it.**
 
-Decoding uses a logit offset on the "no mark" class (`none_bias`), solved by
-bisection so output mark density matches a target. The shipped value is
-`+1.6836`: this restorer marks freely (11.49/100c unbiased) and is held back to
-9.85. The value is specific to this checkpoint and this input.
+**The shipped restorer is a UNION of the char tagger and the lexicon**
+(`restore_merge: known`): the lexicon decides every word it has an entry for,
+and the tagger decides the rest. The two fail in opposite places — the lexicon
+is near-unbeatable on words it has seen and silent on the rest, while the tagger
+never abstains but can be talked out of a common word by context.
+
+Decoding uses a logit offset on the "no mark" class (`none_bias`). In `known`
+mode this acts ONLY on the words the lexicon does not know, so it is precisely
+"how freely does the tagger mark the tail". **The shipped value is `+1.6836`.**
+Measured on one decode:
+
+| tail bias | density /100c | leaderboard |
+| ---: | ---: | ---: |
+| −1.5 | 13.78 | 14.25 |
+| −0.8281 | 13.12 | 14.53 |
+| 0.0 | 12.36 | 14.82 |
+| **+1.6836** | **11.30** | **15.05** |
+| +2.25 | 11.03 | 15.04 |
+| +3.25 | 10.62 | 14.91 |
+| +∞ (lexicon alone) | 9.85 | 13.52 |
+
+The curve is concave with a **broad flat top between +1.68 and +2.25** (15.05 vs
+15.04 is indistinguishable), so the shipped value is not balanced on a knife
+edge: small drift in either restorer will not cost a point.
+
+Note this does NOT contradict the earlier finding that raising the tagger's
+density from 9.85 to 11.49 gained +0.18. That moved marks everywhere; this moves
+them only in the tail. The tagger's marks earn their place where it is
+confident, and are noise where neither restorer knows the word.
 
 ---
 
