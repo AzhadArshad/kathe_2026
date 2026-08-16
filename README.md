@@ -3,8 +3,262 @@
 English (`eng_Latn`) → Kashmiri, Perso-Arabic script (`kas_Arab`), for the
 KATHE 2026 shared task (Gaash Lab / NIT Srinagar + Bureau of Indian Standards).
 
+Scored as the **geometric mean of BLEU and chrF++** on a held-out test set of
+1,730 short everyday sentences. Final score **15.05**, from a starting baseline
+of 8.00.
+
 Licence: Apache-2.0 (`LICENSE`). Third-party attribution: `NOTICE`.
 Model and dataset disclosure: `MODEL_CARD.md`.
+
+## The system
+
+Two models and a lookup table, and **all three are required**:
+
+```
+English  →  IndicTrans2 200M, fine-tuned      →  Kashmiri without short vowels
+         →  diacritic restorer (union)        →  Kashmiri with them
+```
+
+| Component | Weights | Size |
+| --- | --- | ---: |
+| Translation | [`Aju360/kathe-r12-200m-selected`](https://huggingface.co/Aju360/kathe-r12-200m-selected) | 211M params |
+| Diacritic restorer | [`Aju360/kathe-r11-restorer`](https://huggingface.co/Aju360/kathe-r11-restorer) (`r11b_dense.pt`) | 3.3M params |
+| Diacritic lexicon | `data/processed/diacritic_lexicon_both.json` (in this repo) | 48k forms |
+
+Shipping the translation model alone scores **10.00 instead of 15.05.** The
+restoration stage is not polish — see [What we learned](#what-we-learned).
+
+## Results
+
+Every number is the official metric on the competition's hidden test set.
+
+| # | System | Score |
+| ---: | --- | ---: |
+| 001 | IndicTrans2-1B, zero-shot | 8.00 |
+| 002 | 200M distilled, fine-tuned on BPCC | 8.83 |
+| 003 | + diacritic lexicon (unigram) | 11.16 |
+| 004 | + left-context disambiguation | 11.70 |
+| 007 | + external monolingual corpus in the lexicon | 11.81 |
+| 016 | corpus rebuilt + semantically selected, **no restoration** | 10.00 |
+| 011 | + diacritic lexicon | 13.52 |
+| 015 | + learned character-level restorer instead | 13.81 |
+| 019 | + restorer left unsuppressed | 13.99 |
+| 021 | + **union** of restorer and lexicon | 14.82 |
+| **024** | **+ tail suppression tuned** | **15.05** |
+
+Where the +7.05 came from:
+
+| Lever | Gain | GPU needed |
+| --- | ---: | --- |
+| **Diacritic restoration** | **+5.05** | none |
+| Training-mix selection | +1.17 | yes |
+| Fine-tuning at all | +0.83 | yes |
+
+The largest lever by a factor of four required no GPU time whatsoever.
+
+---
+
+## What we learned
+
+Nine days, 26 submissions, one language with almost no public parallel data.
+The findings below are the ones that changed what we did, each with the number
+that forced the change. Most of them generalise past Kashmiri to any
+low-resource pair built on a large pretrained multilingual model.
+
+### 1. Audit the tokenizer against the target orthography *before* training
+
+The single largest result in this project. IndicTrans2's target vocabulary has
+122,672 entries. Three Kashmiri short vowels — kasra (U+0650), damma (U+064F),
+fatha (U+064E) — appear in **exactly one token each**: the bare standalone mark.
+Every other Kashmiri diacritic is baked into whole-word subwords (hamza-below is
+in 378 tokens, inverted-damma in 244).
+
+To write `چھُس` the model must emit `[چھ][ُ][س]` — split a word to insert a bare
+diacritic that occurs in no natural subword context. Beam search never does,
+because the undiacritized whole word is always more probable. The model produced
+**exactly zero** of all three marks across 1,730 sentences, while reproducing
+the two subword-embedded marks at *above* reference rates. Categorical, not
+gradual: the signature of a structural limit, not under-training.
+
+The metric preserves diacritics, so this was expensive. An otherwise-perfect
+translation missing only these three marks scores **67.66 out of 100**.
+
+We lost two days to a wrong diagnosis first — assuming the training data lacked
+the marks, then that preprocessing stripped them, then that the model was
+under-trained. What settled it was counting marks per token in `dict.TGT.json`.
+
+**The lesson:** a pretrained model can be *structurally incapable* of producing
+characters your target orthography requires, and no amount of fine-tuning,
+reweighting or extra epochs will fix a frozen vocabulary. Before committing GPU
+time, count how many of your target script's characters actually appear inside
+the subword vocabulary. It is a five-minute check that was worth +5.05 here —
+four times more than every training-side change combined.
+
+### 2. Your development set can be actively anti-correlated with the truth
+
+We built a careful dev set: 1,003 pairs, stratified to match the test set's
+word-length distribution, human references only, held out by exact pair key with
+an assertion that fails the build if the count is off. Every leakage check
+passed.
+
+Across the whole project its correlation with the leaderboard was **rho −0.39**.
+
+The reason is provenance. Our dev set was cut from BPCC, and IndicTrans2 was
+*trained on BPCC* — it is the corpus AI4Bharat released alongside it. So every
+system we tested was being scored partly on its own base model's training data.
+Holding pairs out of *our* fine-tuning does not hold them out of the base
+model's.
+
+This is not an exotic failure. In a low-resource language there is usually one
+public parallel corpus, and the strongest pretrained model was trained on it.
+The clean dev set — text no pretrained system has seen — is exactly the thing a
+low-resource language does not have.
+
+**The lesson:** treat offline metrics as directional, and let the real
+evaluation adjudicate. We eventually adopted a blunt rule: evaluate offline to
+rank candidates, then spend submissions to decide. Several times the dev set
+ranked the eventual winner *last*.
+
+### 3. Leakage checks catch shared examples, not shared provenance
+
+Submission 005 scored the best dev result of the project and **regressed on the
+leaderboard by 5.3%**.
+
+It added a 260,000-entry two-sided context table to the diacritic restoration
+step. The table was built from training targets only. The dev set was never
+trained on. Every leakage check passed, correctly.
+
+The problem was that the table and the dev set were both BPCC n-grams. A table
+that large stops carrying lexical knowledge and starts memorising word
+sequences — and the dev set, drawn from the same corpus, rewarded exactly that
+while the real test set did not. A 21,000-entry table generalised; 260,000 did
+not.
+
+**This is dev-set overfitting through post-processing**, a route that gets far
+less scrutiny than training. Nothing in a standard leakage check looks for it.
+The usable heuristic we ended on: trust the dev set when a change adds genuinely
+new knowledge (a new corpus, a better model); distrust it when a change adds
+finer-grained context drawn from the dev set's own provenance.
+
+There was a warning sign we missed. The submission's output moved *away* from
+reference diacritic density while its dev score rose. Two independent signals
+disagreeing is worth more than either agreeing.
+
+### 4. Check what your base model was already trained on
+
+We fine-tuned the 1B model with LoRA and it scored **below its own zero-shot
+baseline** (27.78 vs 28.22 on our dev set). Meanwhile a full fine-tune of the
+*distilled 200M* gained +15.9% over its base.
+
+The asymmetry has a clean explanation. IndicTrans2 was trained on BPCC. Training
+the 1B on BPCC re-teaches it what it already knows, so there is nothing to
+recover and the update only perturbs a well-tuned model. The 200M is a
+*distilled* checkpoint — distillation discarded information that BPCC training
+puts back.
+
+**The lesson:** "use the biggest model" is wrong when the big model has already
+consumed your corpus. A smaller distilled checkpoint can have more headroom on
+exactly the data that leaves the large one unmoved. This closed our training
+line entirely; after it we spent no further GPU time on the translation model.
+
+### 5. Read the metric's parameters, then exploit the asymmetry
+
+chrF++ runs at **beta=2**, weighting recall four times precision. Consequence: a
+diacritic the reference has and you omit costs more than one you add that it
+lacks.
+
+For eleven submissions we tuned the restorer's output density to match reference
+density (~9.6 marks per 100 characters), because matching the reference is the
+obvious target. Removing that anchor and letting the model emit its natural 11.5
+was worth **+0.18** — and the curve kept paying until 12.5, where BLEU's n-gram
+precision finally pulled back.
+
+The nuance that took three more submissions: this holds *globally*, not
+everywhere. When we let the model mark more freely on words the lexicon didn't
+know, the score fell monotonically (14.82 → 14.53 → 14.25). Extra marks are
+cheap where the model is confident and pure noise in the tail.
+
+**The lesson:** the scoring function is a specification, not a black box. Its
+parameters tell you which errors are cheap.
+
+### 6. Register mismatch beats data volume
+
+The test set averages **7.3 words per sentence**. BPCC averages 15.4. FLORES —
+the standard dev set everyone reaches for — averages 21.6.
+
+We built the whole plan around FLORES, then measured the actual test input and
+found it was a different task: `He lost his pen.` · `She plays a viola.` Tuning
+on encyclopedic prose would have optimised for sentences we are never scored on.
+
+Rebuilding the corpus and upweighting pairs semantically near the test
+distribution was worth **+1.03** on top of **+0.68** for the rebuild alone. But
+the aggression curve is monotone downward: upweighting by 7x scored below 3x,
+and 31x below that. Sharpening the slice helps; distorting it does not.
+
+**The lesson:** measure your test input directly before choosing a dev set. It
+took ten minutes and invalidated a week of planned work.
+
+### 7. MBR needs a quality-aware utility, which low-resource languages lack
+
+We implemented Minimum Bayes Risk decoding with chrF++ as the utility: sample 32
+candidates, keep the one with the highest mean similarity to the rest. It scored
+**32.67 against beam search's 33.36** on our dev set, at roughly 30x the decode
+cost, and lost at every pool size from 2 to 32.
+
+The diagnostic is the useful part. Oracle selection over the *same* 32
+candidates would have scored **44.95** — a sample beats beam in 853 of 1,003
+sentences. The candidates are excellent; the utility cannot find them. MBR's
+pick ranked #9.3 of 32 on average and agreed with beam outright on 58% of
+sentences.
+
+chrF++ measures **typicality, not quality**. Consensus finds the mode, and the
+mode is what beam already returns. Published MBR gains come from *neural*
+utilities (COMET, BLEURT) that correlate with human judgment — and there is no
+COMET model for Kashmiri.
+
+**The lesson:** similarity-based MBR is not a free win. The +11.6 of reachable
+headroom it revealed is real and remains the largest unexploited lever here, but
+claiming it needs a reranker that knows quality, and building one for a
+low-resource language is its own project.
+
+### 8. The failures that cost the most were silent
+
+None of these threw an exception:
+
+- **A checkpoint that loaded perfectly and translated everything to the empty
+  string.** IndicTrans2 ties `lm_head` to the decoder embeddings;
+  `save_pretrained` drops the tied duplicate and the load path then zeroes both.
+  766 tensors, no error, a clean "all weights initialized" log, and nothing but
+  empty output. *Verify a checkpoint by generating text, never by loading it.*
+- **A preprocessing call that hangs forever at 0% CPU.** `IndicProcessor`
+  pops one placeholder map per input from a queue; call it with mismatched input
+  and output counts and it blocks on `Queue.get()` with no timeout and no log
+  line. Hit twice, in two different places.
+- **Positional scoring.** The official scorer deletes the ID column and zips
+  what remains. A submission sorted by ID against an unsorted input looks
+  perfectly correct and scores near zero.
+- **A stale config.** Our live-deployment post-processing file still pointed at
+  a system from five submissions earlier — everything ran, it was just 1.06
+  points worse. Caught by a fresh-clone rehearsal the day before the deadline.
+
+**The lesson:** in a short competition, budget for verification that a thing
+produced the *right* output, not that it ran. Every one of these would have
+passed a smoke test.
+
+### 9. What we would do differently
+
+- **Audit the tokenizer on day one.** Two days were spent diagnosing an
+  impossibility that a vocabulary count would have revealed immediately.
+- **Submit earlier and more often.** The first leaderboard reading showed our
+  offline proxy overestimated by 1.98x. Everything measured before that had been
+  interpreted against the wrong scale.
+- **Distrust a dev set drawn from the base model's training corpus** from the
+  start, rather than discovering it through a regression.
+- **Rehearse deployment before the last day.** The fresh-clone run found three
+  blockers, one of which — the shipped restorer had never been uploaded anywhere
+  — would have made the system impossible for anyone else to run.
+
+---
 
 ## Gated repositories
 
