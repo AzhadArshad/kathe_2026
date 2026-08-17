@@ -58,6 +58,55 @@ The largest lever by a factor of four required no GPU time whatsoever.
 
 ---
 
+## Inference scripts
+
+Three entry points. All of them resolve to the **published weights** by default,
+so they run from a clean clone with no local `models/` directory and no Hugging
+Face token.
+
+| | Script | Use |
+| --- | --- | --- |
+| **Model loading** | [`src/infer.py`](src/infer.py) | `load_system()` / `translate()`. Both scripts below call it, so there is one definition of the system. |
+| **Single inference** | [`scripts/translate_single.py`](scripts/translate_single.py) | One sentence in, one translation out. |
+| **Batch inference** | [`scripts/generate_translations.py`](scripts/generate_translations.py) | CSV in, scoreable CSV out. |
+
+```bash
+git clone https://github.com/AzhadArshad/kathe_2026 && cd kathe_2026
+uv venv --python 3.11 .venv-decode
+uv pip install --python .venv-decode/bin/python -r requirements-decode.txt
+
+# check the whole system loads and the restoration stage fires
+.venv-decode/bin/python scripts/translate_single.py --self-test
+
+# single
+.venv-decode/bin/python scripts/translate_single.py --text "He lost his pen."
+# -> أمۍ ہوٗر پنُن پین۔
+
+# batch
+.venv-decode/bin/python scripts/generate_translations.py \
+    --input englishdev.csv --output submission.csv
+```
+
+`--self-test` translates three fixed sentences and **fails with exit code 2 if
+restoration produced no kasra, damma or fatha.** That is the failure worth
+guarding: if the restorer or the lexicon silently fails to load, the output is
+still fluent-looking Kashmiri and still scores five points worse. Run it first.
+
+Reusing one loaded system across many sentences:
+
+```python
+import sys; sys.path.insert(0, "src")
+from infer import load_system, translate
+
+system = load_system()                     # published weights, ~10s
+print(translate(system, ["He lost his pen.", "I am tired."]))
+```
+
+**Verified**, not merely intended: an anonymous `git clone` of this repository
+with no local weights and no `HF_TOKEN` set runs both scripts end to end, and
+the single and batch paths produce byte-identical output on the same input.
+
+
 ## What we learned
 
 Nine days, 26 submissions, one language with almost no public parallel data.
@@ -341,30 +390,10 @@ uv run python -m data.build_corpus \
 Step 2 must run before step 3. Step 3 asserts that the held-out count it
 removes equals the count it was given, and fails the build otherwise.
 
-## Translating — the one command that matters
+## Producing a competition submission
 
-```bash
-.venv-decode/bin/python scripts/generate_translations.py \
-    --input englishdev.csv --output submission.csv
-```
-
-**`scripts/generate_translations.py` is the deliverable.** Input CSV in,
-scoreable CSV out, batch mode, no interactivity, no other steps. It decodes with
-the fine-tuned checkpoint and then restores the three short vowels that the
-model structurally cannot produce, which is not an optional polish step:
-
-| | leaderboard |
-| --- | ---: |
-| raw model output | 10.00 |
-| + diacritic lexicon | 13.52 |
-| + learned restorer | 13.99 |
-| **+ both (union — the shipped system)** | **15.05** |
-
-IndicTrans2's target vocabulary holds kasra, damma and fatha in exactly one
-token each, so beam search never emits them and fine-tuning cannot fix a frozen
-vocabulary. A 3.3M-parameter character tagger puts them back, and it is worth
-more than every training-side change in this project combined. Restorer weights
-are fetched from the Hub automatically if they are not already on disk.
+`scripts/generate_translations.py` (see [Inference scripts](#inference-scripts))
+writes the exact `ID,kashmiri_text` format the task requires.
 
 The script refuses to write output whose row count changed, that contains an
 empty row, or where restoration ran without adding any marks — the three
