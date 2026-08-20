@@ -7,6 +7,6 @@
   "hyp_chars_per_line": 38.94,
   "ref_chars_per_line": 40.45,
   "hyp_ref_char_ratio": 0.9625,
-  "hyp_file": "/private/tmp/the assistant-501/-Users-azhadarshad-Desktop-A-P-P-M-D-W-kathe-2026/889275ad-dcce-4df1-b856-3c5ea33a121e/scratchpad/r0.hyp.mbr200m",
+  "hyp_file": "output/r0.hyp.mbr200m",
   "ref_file": "data/dev/r0/r0.kas_Arab"
 }
