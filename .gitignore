@@ -96,6 +96,7 @@ nohup.out
 # corpus figures in MODEL_CARD.md §2, so excluding these two files no longer
 # withholds anything the open-source deliverable is expected to carry.
 PROJECT_NOTES.md
+PROJECT_NOTES.md
 PLANNING.md
 
 # --- os / editor -------------------------------------------------------------
