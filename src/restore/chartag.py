@@ -300,7 +300,12 @@ class Restorer:
     def __init__(self, path: str | Path, device: str = "cpu", none_bias: float = 0.0,
                  batch_size: int = 128, threshold: float | None = None,
                  mark_thresholds: dict | list | None = None):
-        blob = torch.load(path, map_location="cpu", weights_only=False)
+        # weights_only=True: a .pt is a pickle, and unpickling runs whatever the
+        # file says to run. This one is fetched over the network from the Hub and
+        # is loaded by people who did not build it, so it must not be trusted to
+        # be a checkpoint. Everything `save_checkpoint` writes is a plain type
+        # (tensors, dict, list[str]), so the safe loader reads it unchanged.
+        blob = torch.load(path, map_location="cpu", weights_only=True)
         self.cfg = ModelConfig(**blob["config"])
         self.vocab = Vocab.from_json(blob["vocab"])
         self.model = CharTagger(self.cfg)
