@@ -599,7 +599,7 @@ def _read_input(path: Path) -> list[str]:
     if path.suffix.lower() == ".csv":
         import csv
 
-        with open(path, encoding="utf-8", newline="") as fh:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
             rows = list(csv.DictReader(fh))
         cols = rows[0].keys()
         col = next((c for c in ("sentence", "english", "text", "src") if c in cols), None)

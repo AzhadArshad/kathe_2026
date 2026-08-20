@@ -48,7 +48,7 @@ def load(path: str, what: str) -> pd.DataFrame:
     # keep_default_na=False stops pandas turning literal strings into NaN;
     # dtype=str stops it inferring numeric IDs inconsistently between files.
     try:
-        return pd.read_csv(path, encoding="utf-8", dtype=str, keep_default_na=False)
+        return pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except Exception as exc:  # noqa: BLE001
         print(f"FATAL: could not read {what} at {path}: {exc}")
         sys.exit(2)

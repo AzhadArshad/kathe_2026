@@ -63,7 +63,7 @@ DEFAULT_MODEL = "ai4bharat/indictrans2-en-indic-1B"
 def read_input(path: Path) -> tuple[list[str], list[str] | None]:
     """Return (sentences, ids). `ids` is None for plain text input."""
     if path.suffix.lower() == ".csv":
-        with open(path, encoding="utf-8", newline="") as fh:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
             rows = list(csv.DictReader(fh))
         if not rows:
             raise SystemExit(f"{path} has no data rows")

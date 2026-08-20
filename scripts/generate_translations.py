@@ -100,6 +100,28 @@ def load_postproc(path: Path) -> NormConfig:
     return NormConfig(**raw)
 
 
+def ensure_lexicon(cfg: NormConfig) -> NormConfig:
+    """Resolve `diacritic_lexicon` against the repo root.
+
+    Without this the path stays relative to the CALLER's working directory, so
+    running this script from anywhere but the repo root dies with a bare
+    FileNotFoundError — and it dies *after* the whole decode, throwing away the
+    run. Mirrors `infer._resolve_lexicon`; both must stay in step.
+    """
+    if not cfg.diacritic_lexicon:
+        return cfg
+    p = Path(cfg.diacritic_lexicon)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        sys.exit(
+            f"FATAL: diacritic lexicon not found at {p}\n"
+            "       It ships in this repository. Without it the system silently\n"
+            "       degrades from 15.05 to 13.99 on the competition metric."
+        )
+    return NormConfig(**{**cfg.__dict__, "diacritic_lexicon": str(p)})
+
+
 def ensure_restorer(cfg: NormConfig) -> NormConfig:
     """Resolve `restore_model` to a file that exists, downloading if needed."""
     if not cfg.restore_model:
@@ -181,7 +203,7 @@ def main() -> int:
         cfg = NormConfig(**{**cfg.__dict__, "restore_model": None,
                             "diacritic_lexicon": None})
     else:
-        cfg = ensure_restorer(cfg)
+        cfg = ensure_lexicon(ensure_restorer(cfg))
 
     print(f"  {n_in:,} sentences  model={args.model}  device={device}  "
           f"beam={args.beam}", file=sys.stderr)

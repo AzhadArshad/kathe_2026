@@ -64,7 +64,7 @@ def main() -> int:
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
-    src = pd.read_csv(args.source, encoding="utf-8", dtype=str, keep_default_na=False)
+    src = pd.read_csv(args.source, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     if "ID" not in src.columns:
         sys.exit(f"FATAL: {args.source} has no ID column (got {list(src.columns)})")
 
